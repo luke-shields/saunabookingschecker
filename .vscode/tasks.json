@@ -1,0 +1,67 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Sauna: show node version",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion node -v && ${workspaceFolder}/.vscode/loadNodeVersion npm -v"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: npm install",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npm install"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: playwright install browsers",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npx playwright install"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: export html snapshots",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npm run open:urls"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: setup + export html",
+      "dependsOn": [
+        "Sauna: show node version",
+        "Sauna: npm install",
+        "Sauna: playwright install browsers",
+        "Sauna: export html snapshots"
+      ],
+      "dependsOrder": "sequence"
+    }
+  ]
+}
