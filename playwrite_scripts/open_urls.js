@@ -4,13 +4,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DAYS_AHEAD = 10;
+const DAYS_AHEAD = 14;
 
 function formatMs(ms) {
   const n = Number(ms);
   if (!Number.isFinite(n)) return String(ms);
   if (n < 1000) return `${Math.round(n)}ms`;
   return `${(n / 1000).toFixed(1)}s`;
+}
+
+const TRACE_AWAITS = process.env.TRACE_AWAITS === '1';
+let AWAIT_SEQ = 0;
+
+async function tracedAwait(label, fn) {
+  if (!TRACE_AWAITS) return await fn();
+  const id = ++AWAIT_SEQ;
+  const t0 = Date.now();
+  console.log(`[await ${id}] ${label}`);
+  try {
+    const res = await fn();
+    console.log(`[await ${id}] done in ${formatMs(Date.now() - t0)}`);
+    return res;
+  } catch (e) {
+    const msg = e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
+    console.log(`[await ${id}] failed in ${formatMs(Date.now() - t0)}: ${msg}`);
+    throw e;
+  }
 }
 
 function toIsoLocalDate(d) {
@@ -325,12 +344,17 @@ const SITE_ADAPTERS = {
     },
     async scrapePeriod(page) {
       const extractSelector = 'div.monthly-calendar-v2';
-      await page.waitForSelector(extractSelector, { timeout: 30_000 });
+      const startedAt = Date.now();
+      await tracedAwait('[acuity] waitForSelector calendar', () =>
+        page.waitForSelector(extractSelector, { timeout: 30_000 }),
+      );
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const end = new Date(today);
       end.setDate(end.getDate() + Math.max(0, DAYS_AHEAD - 1));
+
+      console.log(`[acuity] calendar ready (target end=${toIsoLocalDate(end)})`);
 
       const periodLabel = await page
         .locator(
@@ -352,45 +376,97 @@ const SITE_ADAPTERS = {
         count = await tiles.count();
       }
 
+      console.log(`[acuity] using tile selector: ${tileSelector}`);
+      console.log(`[acuity] found ${count} candidate day tiles`);
+
       const sessions = [];
       const headingLocator = page.locator("h3:has-text(',')").first();
 
       for (let i = 0; i < count; i++) {
+        const tileStartedAt = Date.now();
         const tile = page.locator(tileSelector).nth(i);
-        const dateLabel = await tile
-          .locator('abbr[aria-label]')
-          .getAttribute('aria-label')
-          .catch(() => null);
+        const labelStartedAt = Date.now();
+        const dateLabel = await tracedAwait(`[acuity] day ${i + 1}/${count} getAttribute aria-label`, () =>
+          tile
+            .locator('abbr[aria-label]')
+            .getAttribute('aria-label', { timeout: 5_000 })
+            .catch(() => null),
+        );
+        console.log(
+          `[acuity] day ${i + 1}/${count}: date label read in ${formatMs(Date.now() - labelStartedAt)}`,
+        );
+
+        console.log(`[acuity] day ${i + 1}/${count}: ${dateLabel || '(no label)'}`);
 
         const isoDate = dateLabel ? toIsoDateFromLongMonthLabel(dateLabel) : null;
-        if (!isoDate) continue;
+        if (!isoDate) {
+          console.log(`[acuity] day ${i + 1}/${count}: skip (could not parse date)`);
+          continue;
+        }
         const d = new Date(`${isoDate}T00:00:00`);
-        if (Number.isNaN(d.getTime())) continue;
-        if (d < today || d > end) continue;
+        if (Number.isNaN(d.getTime())) {
+          console.log(`[acuity] day ${i + 1}/${count}: skip (invalid date)`);
+          continue;
+        }
+        if (d < today || d > end) {
+          console.log(`[acuity] day ${i + 1}/${count}: skip (outside horizon ${isoDate})`);
+          if (d > end) {
+            console.log(
+              `[acuity] day ${i + 1}/${count}: date is after horizon end (${isoDate} > ${toIsoLocalDate(end)}); stopping tile scan`,
+            );
+            break;
+          }
+          continue;
+        }
 
         const targetHeadingSub = dateLabel
           ? String(dateLabel).replace(/,\s*\d{4}\s*$/, '')
           : null;
 
-        await tile.scrollIntoViewIfNeeded();
-        await tile.click({ timeout: 30_000, force: true });
+        const scrollStartedAt = Date.now();
+        try {
+          await tracedAwait(`[acuity] day ${i + 1}/${count} scrollIntoViewIfNeeded`, () =>
+            tile.scrollIntoViewIfNeeded({ timeout: 5_000 }),
+          );
+          console.log(
+            `[acuity] day ${i + 1}/${count}: scrolled into view in ${formatMs(Date.now() - scrollStartedAt)}`,
+          );
+        } catch {
+          console.log(
+            `[acuity] day ${i + 1}/${count}: scrollIntoViewIfNeeded timed out after ${formatMs(Date.now() - scrollStartedAt)}; continuing`,
+          );
+        }
+        const clickStartedAt = Date.now();
+        await tracedAwait(`[acuity] day ${i + 1}/${count} tile.click`, () =>
+          tile.click({ timeout: 10_000, force: true, noWaitAfter: true }),
+        );
+        console.log(
+          `[acuity] day ${i + 1}/${count}: clicked in ${formatMs(Date.now() - clickStartedAt)} (iso=${isoDate})`,
+        );
 
-        // allow React to settle / times list to hydrate
-        await page.waitForTimeout(150);
+        await tracedAwait(`[acuity] day ${i + 1}/${count} waitForTimeout(150)`, () =>
+          page.waitForTimeout(150),
+        );
 
         // Wait for the right-side heading to reflect the clicked date (best-effort).
         if (targetHeadingSub) {
           try {
-            await page.waitForFunction(
-              ({ sub }) => {
-                const h = Array.from(document.querySelectorAll('h3')).find((x) =>
-                  (x.textContent || '').includes(','),
-                );
-                const t = h ? (h.textContent || '') : '';
-                return t && t.includes(sub);
-              },
-              { timeout: 10_000 },
-              { sub: targetHeadingSub },
+            const headingWaitStartedAt = Date.now();
+            await tracedAwait(`[acuity] day ${i + 1}/${count} waitForFunction heading`, () =>
+              page.waitForFunction(
+                ({ sub }) => {
+                  const h = Array.from(document.querySelectorAll('h3')).find((x) =>
+                    (x.textContent || '').includes(','),
+                  );
+                  const t = h ? (h.textContent || '') : '';
+                  return t && t.includes(sub);
+                },
+                { sub: targetHeadingSub },
+                { timeout: 2_500 },
+              ),
+            );
+            console.log(
+              `[acuity] day ${i + 1}/${count}: heading synced in ${formatMs(Date.now() - headingWaitStartedAt)}`,
             );
           } catch {
             // ignore
@@ -399,39 +475,49 @@ const SITE_ADAPTERS = {
 
         // Wait for either slot buttons to render, or an explicit "no times" message.
         try {
-          await page.waitForFunction(
-            () => {
-              const hasSlots =
-                document.querySelectorAll('button.time-selection, button[aria-label*="spots left"], button[aria-label*="spot left"]').length > 0;
-              const bodyText = (document.body?.innerText || '').toLowerCase();
-              const hasNoTimes =
-                bodyText.includes('no times') ||
-                bodyText.includes('no appointments') ||
-                bodyText.includes('no availability');
-              return hasSlots || hasNoTimes;
-            },
-            { timeout: 10_000 },
+          const slotsWaitStartedAt = Date.now();
+          await tracedAwait(`[acuity] day ${i + 1}/${count} waitForFunction slots/no-times`, () =>
+            page.waitForFunction(
+              () => {
+                const hasSlots =
+                  document.querySelectorAll('button.time-selection, button[aria-label*="spots left"], button[aria-label*="spot left"]').length > 0;
+                const bodyText = (document.body?.innerText || '').toLowerCase();
+                const hasNoTimes =
+                  bodyText.includes('no times') ||
+                  bodyText.includes('no appointments') ||
+                  bodyText.includes('no availability');
+                return hasSlots || hasNoTimes;
+              },
+              undefined,
+              { timeout: 3_000 },
+            ),
+          );
+          console.log(
+            `[acuity] day ${i + 1}/${count}: slots/no-times condition satisfied in ${formatMs(Date.now() - slotsWaitStartedAt)}`,
           );
         } catch {
           // ignore
         }
 
-        const slotLocatorPreferred = page.locator('button.time-selection[aria-label], button.time-selection');
-        const preferredCount = await slotLocatorPreferred.count();
-        const slotLocator =
-          preferredCount > 0
-            ? slotLocatorPreferred
-            : page.locator('button[aria-label*="spots left"], .available-times-container button');
-
-        const slotData = await slotLocator.evaluateAll((els) =>
-          els
-            .map((el) => {
-              const aria = el.getAttribute('aria-label') || '';
-              const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-              return { aria, text };
-            })
-            .filter((x) => x.aria || x.text),
+        const slotQueryStartedAt = Date.now();
+        const slotData = await tracedAwait(`[acuity] day ${i + 1}/${count} page.evaluate slot query`, () =>
+          page.evaluate(() => {
+            const selector =
+              'button.time-selection[aria-label], button.time-selection, button[aria-label*="spots left"], button[aria-label*="spot left"], .available-times-container button';
+            return Array.from(document.querySelectorAll(selector))
+              .map((el) => {
+                const aria = el.getAttribute('aria-label') || '';
+                const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                return { aria, text };
+              })
+              .filter((x) => x.aria || x.text);
+          }),
         );
+        console.log(
+          `[acuity] day ${i + 1}/${count}: slot query returned ${slotData.length} elements in ${formatMs(Date.now() - slotQueryStartedAt)}`,
+        );
+
+        const slotParseStartedAt = Date.now();
 
         for (const { aria, text } of slotData) {
           const raw = aria || text;
@@ -451,7 +537,17 @@ const SITE_ADAPTERS = {
             spotsText: spotsText || null,
           });
         }
+
+        console.log(
+          `[acuity] day ${i + 1}/${count}: parsed ${slotData.length} slot elements in ${formatMs(Date.now() - slotParseStartedAt)}`,
+        );
+
+        console.log(
+          `[acuity] day ${i + 1}/${count}: extracted ${slotData.length} slots in ${formatMs(Date.now() - tileStartedAt)}`,
+        );
       }
+
+      console.log(`[acuity] scrapePeriod done: sessions=${sessions.length} in ${formatMs(Date.now() - startedAt)}`);
 
       return { periodLabel: periodLabel ? periodLabel.trim() : null, sessions };
     },
@@ -471,7 +567,9 @@ const SITE_ADAPTERS = {
       let ctx = page;
       try {
         console.log('[acuityWeekly] waiting for weekly calendar on main page');
-        await page.waitForSelector(weeklySelector, { timeout: 5_000 });
+        await tracedAwait('[acuityWeekly] waitForSelector weekly calendar', () =>
+          page.waitForSelector(weeklySelector, { timeout: 5_000 }),
+        );
         console.log('[acuityWeekly] found weekly calendar on main page');
       } catch {
         console.log('[acuityWeekly] weekly calendar not found on main page; searching for Acuity iframe');
@@ -489,7 +587,9 @@ const SITE_ADAPTERS = {
         if (!frame) throw new Error('Could not find Acuity schedule iframe');
         console.log(`[acuityWeekly] using iframe frame url=${frame.url()}`);
         ctx = frame;
-        await frame.waitForSelector(weeklySelector, { timeout: 30_000 });
+        await tracedAwait('[acuityWeekly] frame.waitForSelector weekly calendar', () =>
+          frame.waitForSelector(weeklySelector, { timeout: 30_000 }),
+        );
         console.log('[acuityWeekly] found weekly calendar in iframe');
       }
 
@@ -607,7 +707,16 @@ const SITE_ADAPTERS = {
           `[acuityWeekly] loop ${guard}/8: range=${rangeNow || '(unknown)'} (target end=${targetEndIso})`,
         );
 
-        await ctx.waitForSelector(`${weeklySelector} button.time-selection`, { timeout: 30_000 });
+        try {
+          await tracedAwait(`[acuityWeekly] loop ${guard}/8 waitForSelector slot buttons`, () =>
+            ctx.waitForSelector(`${weeklySelector} button.time-selection`, { timeout: 10_000 }),
+          );
+        } catch {
+          console.log(
+            `[acuityWeekly] loop ${guard}/8: timed out waiting for slot buttons; stopping (range=${rangeNow || '(unknown)'})`,
+          );
+          break;
+        }
         const slotLocator = ctx.locator('button.time-selection[aria-label], button.time-selection');
         const slotData = await slotLocator.evaluateAll((els) =>
           els
@@ -671,21 +780,31 @@ const SITE_ADAPTERS = {
           .catch(() => null);
 
         console.log(`[acuityWeekly] loop ${guard}/8: clicking More Times (before=${beforeRange || 'unknown'})`);
-        await moreTimes.click({ timeout: 30_000, force: true });
+        const clickStartedAt = Date.now();
+        await tracedAwait(`[acuityWeekly] loop ${guard}/8 moreTimes.click`, () =>
+          moreTimes.click({ timeout: 10_000, force: true, noWaitAfter: true }),
+        );
+        console.log(
+          `[acuityWeekly] loop ${guard}/8: click More Times returned in ${formatMs(Date.now() - clickStartedAt)}`,
+        );
+
         if (beforeRange) {
-          try {
-            await ctx.waitForFunction(
-              ({ selector, before }) => {
-                const el = document.querySelector(selector);
-                const after = el ? el.getAttribute('aria-label') : null;
-                return Boolean(after) && after !== before;
-              },
-              { timeout: 15_000 },
-              { selector: weeklySelector, before: String(beforeRange) },
+          const waitStartedAt = Date.now();
+          const deadline = Date.now() + 4_000;
+          while (Date.now() < deadline) {
+            const current = await ctx
+              .locator(weeklySelector)
+              .first()
+              .getAttribute('aria-label')
+              .catch(() => null);
+            if (current && current !== beforeRange) break;
+            await tracedAwait(`[acuityWeekly] loop ${guard}/8 waitForTimeout(200)`, () =>
+              ctx.waitForTimeout(200),
             );
-          } catch {
-            // ignore
           }
+          console.log(
+            `[acuityWeekly] loop ${guard}/8: waited ${formatMs(Date.now() - waitStartedAt)} for range label change`,
+          );
         }
 
         const afterRange = await ctx
@@ -803,12 +922,12 @@ async function tryWaitForPeriodChange(page, sauna, adapter, beforeFragmentHtml) 
 
           return false;
         },
-        { timeout: 30_000 },
         {
           adapterKey: adapter.key,
           before: beforeKey,
           extractSelector: adapter.extractSelector,
         },
+        { timeout: 30_000 },
       );
 
       const afterKey = adapter.getPeriodKey ? await adapter.getPeriodKey(page) : null;
@@ -827,8 +946,8 @@ async function tryWaitForPeriodChange(page, sauna, adapter, beforeFragmentHtml) 
         const el = document.querySelector(selector);
         return el && el.outerHTML !== before;
       },
-      { timeout: 30_000 },
       { selector: adapter.extractSelector, before: beforeFragmentHtml },
+      { timeout: 30_000 },
     );
     console.log('Next period: detected period change via fragment outerHTML');
     return;
@@ -851,9 +970,13 @@ for (let i = 0; i < saunas.length; i++) {
 
   console.log(`Scraping JSON: ${sauna.name} -> ${sauna.url}`);
   console.log(`Scraping JSON: using adapter=${adapter.key}`);
-  await page.goto(sauna.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await tracedAwait(`[main] page.goto ${sauna.name}`, () =>
+    page.goto(sauna.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }),
+  );
   try {
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await tracedAwait(`[main] waitForLoadState networkidle ${sauna.name}`, () =>
+      page.waitForLoadState('networkidle', { timeout: 15_000 }),
+    );
   } catch {
     // ignore (some sites keep long-polling / analytics connections open)
   }
@@ -874,7 +997,9 @@ for (let i = 0; i < saunas.length; i++) {
 
   try {
     const t0 = Date.now();
-    const current = await adapter.scrapePeriod(page);
+    const current = await tracedAwait(`[main] adapter.scrapePeriod current ${sauna.name} (${adapter.key})`, () =>
+      adapter.scrapePeriod(page),
+    );
     console.log(
       `Scraping JSON: scraped current period in ${formatMs(Date.now() - t0)} (rawSessions=${(current.sessions || []).length})`,
     );
@@ -926,8 +1051,8 @@ for (let i = 0; i < saunas.length; i++) {
               const el = document.querySelector(selector);
               return el && el.outerHTML !== before;
             },
-            { timeout: 10_000 },
             { selector: adapter.extractSelector, before: beforeFragment },
+            { timeout: 10_000 },
           );
           changed = true;
         } catch {
