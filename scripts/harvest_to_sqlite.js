@@ -172,6 +172,27 @@ function initDb(db) {
       PRIMARY KEY (sauna_name, date),
       FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
     );
+
+    CREATE TABLE IF NOT EXISTS bookings (
+      sauna_name TEXT NOT NULL,
+      date TEXT NOT NULL,
+      time TEXT NOT NULL,
+      scrape_run_id INTEGER,
+      scraped_at TEXT,
+      is_expected INTEGER NOT NULL,
+      is_inferred INTEGER NOT NULL,
+      seats_per_session INTEGER,
+      spots_left INTEGER,
+      seats_booked INTEGER,
+      percent_full REAL,
+      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+      PRIMARY KEY (sauna_name, date, time),
+      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name),
+      FOREIGN KEY (scrape_run_id) REFERENCES scrape_runs(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date);
+    CREATE INDEX IF NOT EXISTS idx_bookings_sauna_date ON bookings(sauna_name, date);
   `);
 
   db.exec(`
@@ -305,6 +326,71 @@ function initDb(db) {
   `);
 }
 
+function refreshBookingsFromLatest(db) {
+  db.exec(`
+    INSERT INTO bookings (
+      sauna_name,
+      date,
+      time,
+      scrape_run_id,
+      scraped_at,
+      is_expected,
+      is_inferred,
+      seats_per_session,
+      spots_left,
+      seats_booked,
+      percent_full
+    )
+    SELECT
+      sauna_name,
+      date,
+      time,
+      scrape_run_id,
+      scraped_at,
+      is_expected,
+      is_inferred,
+      seats_per_session,
+      spots_left,
+      CASE
+        WHEN seats_per_session IS NULL OR seats_per_session <= 0 THEN NULL
+        WHEN spots_left IS NULL THEN NULL
+        WHEN spots_left >= seats_per_session THEN 0
+        WHEN spots_left <= 0 THEN seats_per_session
+        ELSE (seats_per_session - spots_left)
+      END AS seats_booked,
+      CASE
+        WHEN seats_per_session IS NULL OR seats_per_session <= 0 THEN NULL
+        WHEN spots_left IS NULL THEN NULL
+        WHEN spots_left >= seats_per_session THEN 0.0
+        WHEN spots_left <= 0 THEN 100.0
+        ELSE (100.0 * (seats_per_session - spots_left) / seats_per_session)
+      END AS percent_full
+    FROM v_sessions_latest_with_inference
+    WHERE date IS NOT NULL AND time IS NOT NULL
+    ON CONFLICT(sauna_name, date, time) DO UPDATE SET
+      scrape_run_id = excluded.scrape_run_id,
+      scraped_at = excluded.scraped_at,
+      is_expected = excluded.is_expected,
+      is_inferred = excluded.is_inferred,
+      seats_per_session = excluded.seats_per_session,
+      spots_left = excluded.spots_left,
+      seats_booked = excluded.seats_booked,
+      percent_full = excluded.percent_full,
+      updated_at = CURRENT_TIMESTAMP;
+
+    DELETE FROM bookings
+    WHERE date >= date('now')
+      AND date <= date('now', '+9 day')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM v_sessions_latest_with_inference v
+        WHERE v.sauna_name = bookings.sauna_name
+          AND v.date = bookings.date
+          AND v.time = bookings.time
+      );
+  `);
+}
+
 function upsertSaunasFromCsv(db, saunaInfo) {
   const upsert = db.prepare(
     `INSERT INTO saunas (sauna_name, url, site_key, seats_per_session)
@@ -428,6 +514,7 @@ function main() {
     initDb(db);
     upsertSaunasFromCsv(db, saunaInfo);
     harvestJsonFiles({ db, inputDir: args.input, saunaPredicate });
+    refreshBookingsFromLatest(db);
   } finally {
     db.close();
   }
