@@ -54,6 +54,53 @@
       "problemMatcher": []
     },
     {
+      "label": "Sauna: harvest json to sqlite",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npm run harvest:sqlite"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: sync opening times to sqlite",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npm run sync:opening-times"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: update (sync + scrape + harvest)",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "${workspaceFolder}/.vscode/loadNodeVersion npm run update"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: load and harvest",
+      "dependsOn": [
+        "Sauna: export html snapshots",
+        "Sauna: harvest json to sqlite"
+      ],
+      "dependsOrder": "sequence"
+    },
+    {
       "label": "Sauna: setup + export html",
       "dependsOn": [
         "Sauna: show node version",

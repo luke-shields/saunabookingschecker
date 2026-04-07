@@ -177,8 +177,9 @@ function toSafeFileName(input) {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SAUNA_INFO_PATH = path.join(__dirname, 'sauna_info.csv');
-const OUTPUT_DIR = path.join(__dirname, 'temp_websites');
+const PROJECT_ROOT = path.join(__dirname, '..');
+const SAUNA_INFO_PATH = path.join(PROJECT_ROOT, 'csvs', 'sauna_info.csv');
+const OUTPUT_DIR = path.join(PROJECT_ROOT, 'temp_websites');
 
 const cli = parseArgs(process.argv.slice(2));
 
