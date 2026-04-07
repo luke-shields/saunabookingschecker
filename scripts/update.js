@@ -58,26 +58,26 @@ function runOrExit(cmd, args) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  const syncArgs = ['run', 'sync:opening-times'];
+  const syncArgs = ['run', 'sync:csvs'];
   if (args.db) syncArgs.push('--', '--db', args.db);
 
-  const scrapeArgs = ['run', 'open:urls'];
+  const scrapeArgs = ['run', 'scrape:booking-data'];
   if (args.sauna.length || args.siteKey.length) {
     scrapeArgs.push('--');
     for (const s of args.sauna) scrapeArgs.push('--sauna', s);
     for (const k of args.siteKey) scrapeArgs.push('--sitekey', k);
   }
 
-  const harvestArgs = ['run', 'harvest:sqlite'];
+  const harvestArgs = ['run', 'push:bookings:db'];
   if (args.db) harvestArgs.push('--', '--db', args.db);
 
-  console.log('Update: syncing opening times CSVs into SQLite');
+  console.log('Update: syncing CSVs into SQLite');
   runOrExit('npm', syncArgs);
 
-  console.log('Update: scraping sauna booking sites (JSON)');
+  console.log('Update: scraping booking data (JSON)');
   runOrExit('npm', scrapeArgs);
 
-  console.log('Update: harvesting scraped JSON into SQLite');
+  console.log('Update: pushing bookings into database');
   runOrExit('npm', harvestArgs);
 
   console.log('Update: done');
