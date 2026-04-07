@@ -217,12 +217,13 @@ function initDb(db) {
   `);
 
   db.exec(`
-    CREATE VIEW IF NOT EXISTS v_sessions_latest_with_inference AS
+    DROP VIEW IF EXISTS v_sessions_latest_with_inference;
+    CREATE VIEW v_sessions_latest_with_inference AS
     WITH RECURSIVE
       dates(d) AS (
-        SELECT date('now')
+        SELECT date('now', 'localtime')
         UNION ALL
-        SELECT date(d, '+1 day') FROM dates WHERE d < date('now', '+9 day')
+        SELECT date(d, '+1 day') FROM dates WHERE d < date('now', 'localtime', '+9 day')
       ),
       latest_run AS (
         SELECT sauna_name, MAX(id) AS scrape_run_id
@@ -284,6 +285,13 @@ function initDb(db) {
           je.value AS time
         FROM expected_source es
         JOIN json_each(es.open_times_json) je
+        WHERE (
+          es.date > date('now', 'localtime')
+          OR (
+            es.date = date('now', 'localtime')
+            AND je.value >= strftime('%H:%M', 'now', 'localtime')
+          )
+        )
       ),
       expected_joined AS (
         SELECT
