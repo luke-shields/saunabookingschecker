@@ -1,5 +1,13 @@
 {
   "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "saunaName",
+      "type": "promptString",
+      "description": "Sauna name (must match SaunaName in csvs/sauna_info.csv). Use ALL (or leave blank) to scrape everything.",
+      "default": "ALL"
+    }
+  ],
   "tasks": [
     {
       "label": "Sauna: scrape booking data",
@@ -8,6 +16,19 @@
       "args": [
         "-lc",
         "${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: scrape booking data (prompt for sauna)",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "SAUNA=\"${input:saunaName}\"; if [[ -z \"$SAUNA\" || \"$SAUNA\" == \"ALL\" ]]; then ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data; else ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data -- --sauna \"$SAUNA\"; fi"
       ],
       "options": {
         "cwd": "${workspaceFolder}"

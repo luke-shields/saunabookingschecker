@@ -6,6 +6,21 @@ import { fileURLToPath } from 'node:url';
 
 const DAYS_AHEAD = 10;
 
+function formatMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return String(ms);
+  if (n < 1000) return `${Math.round(n)}ms`;
+  return `${(n / 1000).toFixed(1)}s`;
+}
+
+function toIsoLocalDate(d) {
+  const dt = d instanceof Date ? d : new Date(d);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function parseSpotsLeft(text) {
   const t = String(text || '').trim();
   const m = t.match(/(\d+)\s+spots?\s+left/i);
@@ -441,6 +456,261 @@ const SITE_ADAPTERS = {
       return { periodLabel: periodLabel ? periodLabel.trim() : null, sessions };
     },
   },
+  acuityWeekly: {
+    key: 'acuityWeekly',
+    extractSelector: '#weekly-calendar-region',
+    async scrapePeriod(page) {
+      const startedAt = Date.now();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const end = new Date(today);
+      end.setDate(end.getDate() + Math.max(0, DAYS_AHEAD - 1));
+      const targetEndIso = toIsoLocalDate(end);
+
+      const weeklySelector = '#weekly-calendar-region';
+      let ctx = page;
+      try {
+        console.log('[acuityWeekly] waiting for weekly calendar on main page');
+        await page.waitForSelector(weeklySelector, { timeout: 5_000 });
+        console.log('[acuityWeekly] found weekly calendar on main page');
+      } catch {
+        console.log('[acuityWeekly] weekly calendar not found on main page; searching for Acuity iframe');
+        const findAcuityFrame = () =>
+          page
+            .frames()
+            .find((f) => /acuityscheduling\.com\/schedule\.php/i.test(String(f.url() || '')));
+
+        let frame = findAcuityFrame();
+        const deadline = Date.now() + 30_000;
+        while (!frame && Date.now() < deadline) {
+          await page.waitForTimeout(250);
+          frame = findAcuityFrame();
+        }
+        if (!frame) throw new Error('Could not find Acuity schedule iframe');
+        console.log(`[acuityWeekly] using iframe frame url=${frame.url()}`);
+        ctx = frame;
+        await frame.waitForSelector(weeklySelector, { timeout: 30_000 });
+        console.log('[acuityWeekly] found weekly calendar in iframe');
+      }
+
+      const periodLabel = await ctx
+        .locator(weeklySelector)
+        .first()
+        .getAttribute('aria-label')
+        .catch(() => null);
+
+      console.log(`[acuityWeekly] period: ${periodLabel || '(unknown range)'}`);
+
+      const sessions = [];
+      const seen = new Set();
+
+      const monthToNumber = (name) => {
+        const n = String(name || '').trim().toLowerCase();
+        if (MONTHS[n]) return MONTHS[n];
+        const short = n.slice(0, 3);
+        const map = {
+          jan: 1,
+          feb: 2,
+          mar: 3,
+          apr: 4,
+          may: 5,
+          jun: 6,
+          jul: 7,
+          aug: 8,
+          sep: 9,
+          oct: 10,
+          nov: 11,
+          dec: 12,
+        };
+        return map[short] || null;
+      };
+
+      const parseIsoFromMonthDay = ({ monthName, day, yearHint }) => {
+        const monthNum = monthToNumber(monthName);
+        if (!monthNum) return null;
+        let year = typeof yearHint === 'number' ? yearHint : today.getFullYear();
+        if (today.getMonth() === 11 && monthNum === 1) year += 1;
+        const mm = String(monthNum).padStart(2, '0');
+        const dd = String(day).padStart(2, '0');
+        return `${year}-${mm}-${dd}`;
+      };
+
+      const parseWeeklyRangeIso = (rangeLabel) => {
+        // Example: "Currently showing Apr 10 to Apr 18"
+        const raw = String(rangeLabel || '').trim();
+        const m = raw.match(/Currently\s+showing\s+([A-Za-z]+)\s+(\d{1,2})\s+to\s+([A-Za-z]+)\s+(\d{1,2})/i);
+        if (!m) return { fromIso: null, toIso: null };
+        const fromIso = parseIsoFromMonthDay({ monthName: m[1], day: Number(m[2]) });
+        let toIso = parseIsoFromMonthDay({ monthName: m[3], day: Number(m[4]) });
+        if (fromIso && toIso) {
+          // Handle ranges that wrap into the next year.
+          const fromMonth = Number(fromIso.slice(5, 7));
+          const toMonth = Number(toIso.slice(5, 7));
+          if (Number.isFinite(fromMonth) && Number.isFinite(toMonth) && toMonth < fromMonth) {
+            const y = Number(toIso.slice(0, 4));
+            toIso = `${y + 1}${toIso.slice(4)}`;
+          }
+        }
+        return { fromIso, toIso };
+      };
+
+      const parseIsoFromWeeklyAria = (aria) => {
+        const parts = String(aria || '')
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean);
+        const tail = parts.length > 0 ? parts[parts.length - 1] : null;
+        if (!tail) return null;
+        const m = tail.match(/^(?:[A-Za-z]+)\s+([A-Za-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?$/);
+        if (!m) return null;
+        const monthNum = monthToNumber(m[1]);
+        if (!monthNum) return null;
+        const day = Number(m[2]);
+        let year = m[3] ? Number(m[3]) : today.getFullYear();
+        if (!m[3] && today.getMonth() === 11 && monthNum === 1) year += 1;
+        const mm = String(monthNum).padStart(2, '0');
+        const dd = String(day).padStart(2, '0');
+        return `${year}-${mm}-${dd}`;
+      };
+
+      const getMaxSessionDate = () => {
+        const dates = sessions
+          .map((s) => (s && typeof s === 'object' ? s.date : null))
+          .filter(Boolean)
+          .sort();
+        return dates.length > 0 ? dates[dates.length - 1] : null;
+      };
+
+      let guard = 0;
+      while (guard < 8) {
+        guard++;
+
+        const loopStartedAt = Date.now();
+        const rangeNow = await ctx
+          .locator(weeklySelector)
+          .first()
+          .getAttribute('aria-label')
+          .catch(() => null);
+
+        const { fromIso: rangeFromIso, toIso: rangeToIso } = parseWeeklyRangeIso(rangeNow);
+        if (rangeFromIso) {
+          const rangeFromDate = new Date(`${rangeFromIso}T00:00:00`);
+          if (!Number.isNaN(rangeFromDate.getTime()) && rangeFromDate > end) {
+            console.log(
+              `[acuityWeekly] loop ${guard}/8: range starts after target end (${rangeFromIso} > ${targetEndIso}); stopping pagination`,
+            );
+            break;
+          }
+        }
+
+        console.log(
+          `[acuityWeekly] loop ${guard}/8: range=${rangeNow || '(unknown)'} (target end=${targetEndIso})`,
+        );
+
+        await ctx.waitForSelector(`${weeklySelector} button.time-selection`, { timeout: 30_000 });
+        const slotLocator = ctx.locator('button.time-selection[aria-label], button.time-selection');
+        const slotData = await slotLocator.evaluateAll((els) =>
+          els
+            .map((el) => {
+              const aria = el.getAttribute('aria-label') || '';
+              const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+              return { aria, text };
+            })
+            .filter((x) => x.aria || x.text),
+        );
+
+        console.log(`[acuityWeekly] loop ${guard}/8: found ${slotData.length} slot buttons`);
+
+        const beforeCount = sessions.length;
+
+        for (const { aria, text } of slotData) {
+          const raw = aria || text;
+          if (!raw) continue;
+          const m = String(raw).match(/(\d{1,2}:\d{2})/);
+          const time = m ? m[1] : null;
+
+          const isoDate = parseIsoFromWeeklyAria(raw);
+          if (isoDate) {
+            const d = new Date(`${isoDate}T00:00:00`);
+            if (!Number.isNaN(d.getTime()) && (d < today || d > end)) continue;
+          }
+
+          let spotsText = null;
+          const m2 = String(raw).match(/(\d+\s+spots?\s+left|no\s+spots?\s+left|full)/i);
+          if (m2) spotsText = m2[1];
+          else spotsText = raw;
+
+          const key = `${isoDate || ''}||${time || ''}||${spotsText || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          sessions.push({
+            date: isoDate || null,
+            time,
+            spotsText: spotsText || null,
+          });
+        }
+
+        const added = sessions.length - beforeCount;
+        console.log(
+          `[acuityWeekly] loop ${guard}/8: added ${added} sessions (total=${sessions.length}) in ${formatMs(Date.now() - loopStartedAt)}`,
+        );
+
+        const maxIso = getMaxSessionDate();
+        const maxDate = maxIso ? new Date(`${maxIso}T00:00:00`) : null;
+        if (maxDate && !Number.isNaN(maxDate.getTime()) && maxDate >= end) break;
+
+        const moreTimes = ctx.locator("button[aria-label='More Times']").first();
+        const canMore = (await moreTimes.count()) > 0;
+        if (!canMore) break;
+
+        const beforeRange = await ctx
+          .locator(weeklySelector)
+          .first()
+          .getAttribute('aria-label')
+          .catch(() => null);
+
+        console.log(`[acuityWeekly] loop ${guard}/8: clicking More Times (before=${beforeRange || 'unknown'})`);
+        await moreTimes.click({ timeout: 30_000, force: true });
+        if (beforeRange) {
+          try {
+            await ctx.waitForFunction(
+              ({ selector, before }) => {
+                const el = document.querySelector(selector);
+                const after = el ? el.getAttribute('aria-label') : null;
+                return Boolean(after) && after !== before;
+              },
+              { timeout: 15_000 },
+              { selector: weeklySelector, before: String(beforeRange) },
+            );
+          } catch {
+            // ignore
+          }
+        }
+
+        const afterRange = await ctx
+          .locator(weeklySelector)
+          .first()
+          .getAttribute('aria-label')
+          .catch(() => null);
+        console.log(`[acuityWeekly] loop ${guard}/8: after More Times: ${afterRange || 'unknown'}`);
+
+        const { fromIso: afterFromIso } = parseWeeklyRangeIso(afterRange);
+        if (afterFromIso) {
+          const afterFromDate = new Date(`${afterFromIso}T00:00:00`);
+          if (!Number.isNaN(afterFromDate.getTime()) && afterFromDate > end) {
+            console.log(
+              `[acuityWeekly] loop ${guard}/8: next range starts after target end (${afterFromIso} > ${targetEndIso}); stopping pagination`,
+            );
+            break;
+          }
+        }
+      }
+
+      console.log(`[acuityWeekly] scrapePeriod done: sessions=${sessions.length} in ${formatMs(Date.now() - startedAt)}`);
+      return { periodLabel: periodLabel ? periodLabel.trim() : null, sessions };
+    },
+  },
 };
 
 function getAdapter(siteKey) {
@@ -467,6 +737,17 @@ function normalizeSessions(siteKey, rawSessions) {
       if (siteKey === 'acuity') {
         const dateLabel = s.dateLabel || null;
         const date = dateLabel ? toIsoDateFromLongMonthLabel(dateLabel) : null;
+        return {
+          date,
+          time: s.time || null,
+          spotsLeft: parseSpotsLeft(s.spotsText),
+          spotsText: s.spotsText || null,
+        };
+      }
+
+      if (siteKey === 'acuityWeekly') {
+        const dateLabel = s.dateLabel || null;
+        const date = s.date || (dateLabel ? toIsoDateFromLongMonthLabel(dateLabel) : null);
         return {
           date,
           time: s.time || null,
@@ -565,15 +846,18 @@ for (let i = 0; i < saunas.length; i++) {
   const sauna = saunas[i];
   const page = await context.newPage();
 
+  const saunaStartedAt = Date.now();
   const adapter = getAdapter(sauna.siteKey);
 
   console.log(`Scraping JSON: ${sauna.name} -> ${sauna.url}`);
+  console.log(`Scraping JSON: using adapter=${adapter.key}`);
   await page.goto(sauna.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   try {
     await page.waitForLoadState('networkidle', { timeout: 15_000 });
   } catch {
     // ignore (some sites keep long-polling / analytics connections open)
   }
+  console.log(`Scraping JSON: page loaded in ${formatMs(Date.now() - saunaStartedAt)}`);
 
   let baseName = toSafeFileName(sauna.name) || `sauna_${i + 1}`;
   if (usedNames.has(baseName)) baseName = `${baseName}_${i + 1}`;
@@ -589,7 +873,11 @@ for (let i = 0; i < saunas.length; i++) {
   };
 
   try {
+    const t0 = Date.now();
     const current = await adapter.scrapePeriod(page);
+    console.log(
+      `Scraping JSON: scraped current period in ${formatMs(Date.now() - t0)} (rawSessions=${(current.sessions || []).length})`,
+    );
     result.periods.push({
       label: current.periodLabel || null,
       sessions: filterSessionsToNextDays(
@@ -597,6 +885,7 @@ for (let i = 0; i < saunas.length; i++) {
         DAYS_AHEAD,
       ),
     });
+    console.log(`Scraping JSON: current period sessions(after normalize/filter)=${result.periods[0].sessions.length}`);
   } catch (e) {
     const message =
       e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
@@ -654,23 +943,20 @@ for (let i = 0; i < saunas.length; i++) {
       }
 
       const next = await adapter.scrapePeriod(page);
+      console.log(
+        `Scraping JSON: scraped ${suffix} period (rawSessions=${(next.sessions || []).length})`,
+      );
       result.periods.push({
         label: next.periodLabel || null,
         sessions: filterSessionsToNextDays(
           normalizeSessions(adapter.key, next.sessions || []),
           DAYS_AHEAD,
         ),
-        suffix,
       });
+      console.log(
+        `Scraping JSON: ${suffix} period sessions(after normalize/filter)=${result.periods[result.periods.length - 1].sessions.length}`,
+      );
     } catch (e) {
-      try {
-        const debugPath = path.join(OUTPUT_DIR, `${baseName}_${suffix}_error.png`);
-        await page.screenshot({ path: debugPath, fullPage: true });
-        console.warn(`Wrote debug screenshot: ${debugPath}`);
-      } catch {
-        // ignore
-      }
-
       const message =
         e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
       result.errors.push({ stage: `scrape_${suffix}`, message });
@@ -679,8 +965,16 @@ for (let i = 0; i < saunas.length; i++) {
   }
 
   const outPath = path.join(OUTPUT_DIR, `${baseName}.json`);
+  const totalSessions = result.periods.reduce(
+    (sum, p) => sum + ((p && p.sessions && Array.isArray(p.sessions) ? p.sessions.length : 0) || 0),
+    0,
+  );
+  console.log(
+    `Scraping JSON: writing output file (periods=${result.periods.length}, sessions=${totalSessions}, errors=${result.errors.length})`,
+  );
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf8');
   console.log(`Wrote: ${outPath}`);
+  console.log(`Scraping JSON: done in ${formatMs(Date.now() - saunaStartedAt)}`);
 
   await page.close();
 }
