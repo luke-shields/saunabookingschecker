@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
 
+import { initDb } from './db/init_db.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.join(__dirname, '..');
@@ -108,39 +110,6 @@ function readSaunaInfoCsv(filePath) {
       };
     })
     .filter((r) => r.name);
-}
-
-function initDb(db) {
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS saunas (
-      sauna_name TEXT PRIMARY KEY,
-      url TEXT,
-      site_key TEXT,
-      seats_per_session INTEGER,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
-    );
-
-    CREATE TABLE IF NOT EXISTS expected_weekly_open_times (
-      sauna_name TEXT NOT NULL,
-      weekday INTEGER NOT NULL,
-      open_times_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      PRIMARY KEY (sauna_name, weekday),
-      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
-    );
-
-    CREATE TABLE IF NOT EXISTS expected_date_open_times_override (
-      sauna_name TEXT NOT NULL,
-      date TEXT NOT NULL,
-      open_times_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      PRIMARY KEY (sauna_name, date),
-      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
-    );
-  `);
 }
 
 function isTimeLike(s) {
