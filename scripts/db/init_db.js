@@ -180,13 +180,49 @@ export function initDb(db) {
           scrape_run_id,
           scraped_at,
           1 AS is_expected,
-          CASE WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL THEN 1 ELSE 0 END AS is_inferred,
           CASE
-            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL THEN 0
+            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
+              AND (
+                date != date('now', 'localtime')
+                OR EXISTS (
+                  SELECT 1
+                  FROM latest_obs lo2
+                  WHERE lo2.sauna_name = expected_joined.sauna_name
+                    AND lo2.date = expected_joined.date
+                    AND lo2.time < expected_joined.time
+                )
+              )
+              THEN 1
+            ELSE 0
+          END AS is_inferred,
+          CASE
+            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
+              AND (
+                date != date('now', 'localtime')
+                OR EXISTS (
+                  SELECT 1
+                  FROM latest_obs lo2
+                  WHERE lo2.sauna_name = expected_joined.sauna_name
+                    AND lo2.date = expected_joined.date
+                    AND lo2.time < expected_joined.time
+                )
+              )
+              THEN 0
             ELSE observed_spots_left
           END AS spots_left,
           CASE
-            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL THEN 'Full (inferred)'
+            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
+              AND (
+                date != date('now', 'localtime')
+                OR EXISTS (
+                  SELECT 1
+                  FROM latest_obs lo2
+                  WHERE lo2.sauna_name = expected_joined.sauna_name
+                    AND lo2.date = expected_joined.date
+                    AND lo2.time < expected_joined.time
+                )
+              )
+              THEN 'Full (inferred)'
             ELSE observed_spots_text
           END AS spots_text
         FROM expected_joined
