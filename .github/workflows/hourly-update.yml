@@ -33,7 +33,16 @@ jobs:
         run: |
           set -euo pipefail
           git fetch origin "${BASE_BRANCH}"
+          git fetch origin "${DATA_BRANCH}" || true
           git checkout -B "${DATA_BRANCH}" "origin/${BASE_BRANCH}"
+
+          # Option B: restore the previous DB from the existing data branch (if present)
+          # so `npm run update` can build incrementally.
+          if git show "origin/${DATA_BRANCH}:sauna_bookings.sqlite" > sauna_bookings.sqlite 2>/dev/null; then
+            echo "Restored sauna_bookings.sqlite from origin/${DATA_BRANCH}";
+          else
+            echo "No previous sauna_bookings.sqlite found on origin/${DATA_BRANCH}; starting fresh.";
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
