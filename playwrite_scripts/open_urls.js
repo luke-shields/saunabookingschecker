@@ -259,7 +259,8 @@ const SITE_ADAPTERS = {
     nextSelector: "[data-hook='next-arrow']",
     nextSuffix: 'next_week',
     async getPeriodKey(page) {
-      return await page.evaluate((extractSelector) => {
+      const startedAt = Date.now();
+      const key = await page.evaluate((extractSelector) => {
         const root = document.querySelector(extractSelector);
         if (!root) return null;
 
@@ -273,22 +274,54 @@ const SITE_ADAPTERS = {
 
         return `${caption || ''}||${firstDayHook || ''}`;
       }, "[data-hook='BookingCalendar-wrapper']");
+      return key;
     },
     async scrapePeriod(page) {
-      await page.waitForSelector("[data-hook='BookingCalendar-wrapper']", { timeout: 30_000 });
+      const startedAt = Date.now();
+      await tracedAwait('[wilder] waitForSelector BookingCalendar-wrapper', () =>
+        page.waitForSelector("[data-hook='BookingCalendar-wrapper']", { timeout: 30_000 }),
+      );
+
+      const wrapper = page.locator("[data-hook='BookingCalendar-wrapper']").first();
+      const wrapperCount = await wrapper.count();
+
+      try {
+        const htmlSnippet = await wrapper.evaluate((el) => (el.outerHTML || '').slice(0, 800));
+      } catch {
+        console.log('[wilder] could not read wrapper outerHTML');
+      }
+
+      const captionText = await wrapper
+        .locator('[data-hook="caption-text"]')
+        .first()
+        .innerText()
+        .catch(() => null);
+
+      const dayButtons = wrapper.locator('button.rdp-button_reset, button[role="gridcell"], [data-hook^="day-availability-"]');
+      const dayCount = await dayButtons.count().catch(() => 0);
+
+      const disabledCount = await wrapper
+        .locator('button[disabled], button[aria-disabled="true"]')
+        .count()
+        .catch(() => 0);
+
       // After period navigation the wrapper persists, but the agenda content hydrates asynchronously.
       // Best-effort wait to reduce empty-scrape risk.
+      const waitSlotsStartedAt = Date.now();
       try {
-        await page.waitForSelector(
-          "[data-hook='BookingCalendar-wrapper'] [data-hook='agenda-slot-time']",
-          { timeout: 10_000 },
+        await tracedAwait('[wilder] waitForSelector agenda-slot-time', () =>
+          page.waitForSelector(
+            "[data-hook='BookingCalendar-wrapper'] [data-hook='agenda-slot-time']",
+            { timeout: 10_000 },
+          ),
         );
       } catch {
-        // ignore (some weeks may have no slots)
       }
-      return await page.evaluate(() => {
+
+      const evalStartedAt = Date.now();
+      const res = await page.evaluate(() => {
         const root = document.querySelector("[data-hook='BookingCalendar-wrapper']");
-        if (!root) return { periodLabel: null, sessions: [] };
+        if (!root) return { periodLabel: null, sessions: [], debug: { hasRoot: false } };
 
         const periodLabel = root
           .querySelector('[data-hook="caption-text"]')
@@ -316,8 +349,187 @@ const SITE_ADAPTERS = {
           })
           .filter((s) => s.dateTime || s.time || s.spotsText);
 
-        return { periodLabel: periodLabel || null, sessions };
+        const debug = {
+          hasRoot: true,
+          slotEls: slotEls.length,
+          hasAgendaSlotTime: root.querySelectorAll('[data-hook="agenda-slot-time"]').length,
+          hasCaptionText: Boolean(root.querySelector('[data-hook="caption-text"]')),
+        };
+
+        return { periodLabel: periodLabel || null, sessions, debug };
       });
+      console.log(`[wilder] page.evaluate extracted sessions=${(res.sessions || []).length} in ${formatMs(Date.now() - evalStartedAt)}`);
+      if (res && res.debug) console.log(`[wilder] debug: ${JSON.stringify(res.debug)}`);
+      console.log(`[wilder] scrapePeriod: done in ${formatMs(Date.now() - startedAt)}`);
+      return { periodLabel: res.periodLabel || null, sessions: res.sessions || [] };
+    },
+  },
+  wembury: {
+    key: 'wembury',
+    extractSelector: "[data-hook='BookingCalendar-wrapper']",
+    nextSelector: "[data-hook='next-arrow']",
+    nextSuffix: 'next_week',
+    async getPeriodKey(page) {
+      const startedAt = Date.now();
+      const key = await page.evaluate((extractSelector) => {
+        const root = document.querySelector(extractSelector);
+        if (!root) return null;
+
+        const caption = root
+          .querySelector('[data-hook="caption-text"]')
+          ?.textContent?.trim();
+
+        const weekText = Array.from(root.querySelectorAll('span[aria-live="polite"]'))
+          .map((x) => (x.textContent || '').trim())
+          .find(Boolean);
+
+        const dataDates = Array.from(root.querySelectorAll('button[data-date]'))
+          .map((b) => b.getAttribute('data-date') || '')
+          .filter(Boolean)
+          .join(',');
+
+        const selected = root
+          .querySelector('[data-hook="selected-date"]')
+          ?.textContent?.trim();
+
+        return `${caption || ''}||${weekText || ''}||${selected || ''}||${dataDates || ''}`;
+      }, "[data-hook='BookingCalendar-wrapper']");
+      console.log(`[wembury] getPeriodKey: ${key || '(null)'} in ${formatMs(Date.now() - startedAt)}`);
+      return key;
+    },
+    async scrapePeriod(page) {
+      const startedAt = Date.now();
+      console.log('[wembury] scrapePeriod: start');
+      await tracedAwait('[wembury] waitForSelector BookingCalendar-wrapper', () =>
+        page.waitForSelector("[data-hook='BookingCalendar-wrapper']", { timeout: 30_000 }),
+      );
+
+      const wrapper = page.locator("[data-hook='BookingCalendar-wrapper']").first();
+      const wrapperCount = await wrapper.count();
+      console.log(`[wembury] wrapper count=${wrapperCount}`);
+
+      const captionText = await wrapper
+        .locator('[data-hook="caption-text"]')
+        .first()
+        .innerText()
+        .catch(() => null);
+
+      const weekLive = await wrapper
+        .locator('span[aria-live="polite"]')
+        .first()
+        .innerText()
+        .catch(() => null);
+
+      console.log(
+        `[wembury] header caption=${captionText ? JSON.stringify(captionText.trim()) : '(missing)'} week=${weekLive ? JSON.stringify(weekLive.trim()) : '(missing)'}`,
+      );
+
+      const parseDataDateToIso = (raw) => {
+        const m = String(raw || '').trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+        if (!m) return null;
+        const y = Number(m[1]);
+        const monthIndex = Number(m[2]);
+        const d = Number(m[3]);
+        if (!Number.isFinite(y) || !Number.isFinite(monthIndex) || !Number.isFinite(d)) return null;
+        const mm = String(monthIndex + 1).padStart(2, '0');
+        const dd = String(d).padStart(2, '0');
+        return `${y}-${mm}-${dd}`;
+      };
+
+      const days = await wrapper
+        .locator('button[data-date]')
+        .evaluateAll((els) =>
+          els.map((b) => {
+            const dataDate = b.getAttribute('data-date') || null;
+            const disabled = b.hasAttribute('disabled') || b.getAttribute('aria-disabled') === 'true';
+            const hasAvailableDot = Boolean(
+              b.querySelector('[data-available="true"]') ||
+                b.querySelector('[aria-label="Available Spots"]') ||
+                b.querySelector('[data-hook="dot-icon"]'),
+            );
+            const aria = b.getAttribute('aria-label') || null;
+            const ariaSelected = b.getAttribute('aria-selected') || null;
+            return { dataDate, disabled, hasAvailableDot, aria, ariaSelected };
+          }),
+        )
+        .catch(() => []);
+
+      const parsedDays = (days || [])
+        .map((d) => ({
+          ...d,
+          iso: d && d.dataDate ? parseDataDateToIso(d.dataDate) : null,
+        }))
+        .filter((d) => d && d.iso);
+
+      const availableDays = parsedDays.filter((d) => !d.disabled && d.hasAvailableDot);
+      console.log(`[wembury] days in view=${parsedDays.length} available(dot+enabled)=${availableDays.length}`);
+      if (availableDays.length > 0) {
+        console.log(`[wembury] available day isos: ${availableDays.map((d) => d.iso).join(', ')}`);
+      }
+
+      const sessions = [];
+      const seen = new Set();
+
+      for (let i = 0; i < availableDays.length; i++) {
+        const day = availableDays[i];
+        const clickStartedAt = Date.now();
+        console.log(`[wembury] day ${i + 1}/${availableDays.length}: clicking ${day.iso} (data-date=${day.dataDate})`);
+
+        const dayBtn = wrapper.locator(`button[data-date="${day.dataDate}"]`).first();
+        await tracedAwait(`[wembury] day ${i + 1}/${availableDays.length} click`, () =>
+          dayBtn.click({ timeout: 10_000, force: true, noWaitAfter: true }),
+        );
+        console.log(`[wembury] day ${i + 1}/${availableDays.length}: click returned in ${formatMs(Date.now() - clickStartedAt)}`);
+
+        await tracedAwait(`[wembury] day ${i + 1}/${availableDays.length} waitForTimeout(150)`, () =>
+          page.waitForTimeout(150),
+        );
+
+        try {
+          await tracedAwait(`[wembury] day ${i + 1}/${availableDays.length} waitForSelector agenda-slot-time`, () =>
+            page.waitForSelector(
+              "[data-hook='BookingCalendar-wrapper'] [data-hook='agenda-slot-time']",
+              { timeout: 2_000 },
+            ),
+          );
+        } catch {
+          // ignore
+        }
+
+        const dayEvalStartedAt = Date.now();
+        const daySlots = await page.evaluate(() => {
+          const root = document.querySelector("[data-hook='BookingCalendar-wrapper']");
+          if (!root) return [];
+          const slotEls = Array.from(root.querySelectorAll('[data-hook^="agenda-slot-"]'))
+            .filter((el) => /^agenda-slot-\d+$/.test(el.getAttribute('data-hook') || ''));
+
+          return slotEls
+            .map((slotEl) => {
+              const time = slotEl
+                .querySelector('[data-hook="agenda-slot-time"]')
+                ?.textContent?.trim();
+              const spotsText = slotEl
+                .querySelector('[id^="agenda-slot-spots-left-"], [data-type="agenda-slot-detail-spots-left"]')
+                ?.textContent?.trim();
+              return { time: time || null, spotsText: spotsText || null };
+            })
+            .filter((s) => s.time || s.spotsText);
+        });
+
+        console.log(
+          `[wembury] day ${i + 1}/${availableDays.length}: extracted ${daySlots.length} slots in ${formatMs(Date.now() - dayEvalStartedAt)}`,
+        );
+
+        for (const s of daySlots) {
+          const key = `${day.iso}||${s.time || ''}||${s.spotsText || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          sessions.push({ date: day.iso, time: s.time || null, spotsText: s.spotsText || null });
+        }
+      }
+
+      console.log(`[wembury] scrapePeriod done: sessions=${sessions.length} in ${formatMs(Date.now() - startedAt)}`);
+      return { periodLabel: captionText ? captionText.trim() : null, sessions };
     },
   },
   acuity: {
@@ -833,6 +1045,9 @@ const SITE_ADAPTERS = {
   },
 };
 
+// Backwards-compatible aliases (old sauna_info.csv values)
+SITE_ADAPTERS.wilder = SITE_ADAPTERS.wilder;
+
 function getAdapter(siteKey) {
   const key = String(siteKey || '').trim();
   const adapter = SITE_ADAPTERS[key];
@@ -843,11 +1058,21 @@ function getAdapter(siteKey) {
 function normalizeSessions(siteKey, rawSessions) {
   return rawSessions
     .map((s) => {
-      if (siteKey === 'wilder') {
+      if (siteKey === 'wilder' || siteKey === 'wilder' || siteKey === 'wemburyWildSauna') {
         const dateTime = s.dateTime || null;
         const date = dateTime ? String(dateTime).slice(0, 10) : null;
         return {
           date,
+          time: s.time || null,
+          spotsLeft: parseSpotsLeft(s.spotsText),
+          spotsText: s.spotsText || null,
+        };
+      }
+
+      if (siteKey === 'wembury') {
+        const date = s.date || (s.dateTime ? String(s.dateTime).slice(0, 10) : null);
+        return {
+          date: date || null,
           time: s.time || null,
           spotsLeft: parseSpotsLeft(s.spotsText),
           spotsText: s.spotsText || null,
@@ -897,7 +1122,7 @@ async function tryWaitForPeriodChange(page, sauna, adapter, beforeFragmentHtml) 
           const root = document.querySelector(extractSelector);
           if (!root) return false;
 
-          if (adapterKey === 'wilder') {
+          if (adapterKey === 'wilder' || adapterKey === 'wilder' || adapterKey === 'wemburyWildSauna') {
             const caption = root
               .querySelector('[data-hook="caption-text"]')
               ?.textContent?.trim();
@@ -905,6 +1130,24 @@ async function tryWaitForPeriodChange(page, sauna, adapter, beforeFragmentHtml) 
               .querySelector('[data-hook^="day-availability-"]')
               ?.getAttribute('data-hook');
             const current = `${caption || ''}||${firstDayHook || ''}`;
+            return current !== before;
+          }
+
+          if (adapterKey === 'wembury') {
+            const caption = root
+              .querySelector('[data-hook="caption-text"]')
+              ?.textContent?.trim();
+            const weekText = Array.from(root.querySelectorAll('span[aria-live="polite"]'))
+              .map((x) => (x.textContent || '').trim())
+              .find(Boolean);
+            const dataDates = Array.from(root.querySelectorAll('button[data-date]'))
+              .map((b) => b.getAttribute('data-date') || '')
+              .filter(Boolean)
+              .join(',');
+            const selected = root
+              .querySelector('[data-hook="selected-date"]')
+              ?.textContent?.trim();
+            const current = `${caption || ''}||${weekText || ''}||${selected || ''}||${dataDates || ''}`;
             return current !== before;
           }
 
