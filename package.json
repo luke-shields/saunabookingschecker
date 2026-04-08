@@ -6,6 +6,7 @@
   "scripts": {
     "sync:csvs": "node scripts/sync_opening_times_to_sqlite.js",
     "scrape:booking-data": "node playwrite_scripts/open_urls.js",
+    "generate:opening-times-weekly": "node playwrite_scripts/generate_opening_times_weekly.js",
     "push:bookings:db": "node scripts/harvest_to_sqlite.js",
     "update": "node scripts/update.js"
   },

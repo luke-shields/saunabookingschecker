@@ -122,6 +122,28 @@ Notes:
 - Date overrides:
   - `csvs/opening_times_override.csv`
 
+## Generating weekly opening times (automatic)
+
+This repo can generate a suggested `opening_times_weekly.csv` by scraping the next ~3 weeks of availability.
+
+Rule used:
+
+- For each sauna + weekday + start time, if that time appears in **at least 2 of the next 3 weeks**, it is treated as a weekly session.
+
+Output:
+
+- `csvs/generated_opening_times_weekly.csv`
+
+Run:
+
+```bash
+npm run generate:opening-times-weekly
+```
+
+Or from VS Code:
+
+- `Sauna: generate opening times weekly (3-week heuristic)`
+
 ## Outputs
 
 - SQLite DB:

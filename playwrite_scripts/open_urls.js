@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const DAYS_AHEAD = 14;
+const DAYS_AHEAD_RAW = Number.parseInt(process.env.DAYS_AHEAD || '', 10);
+const DAYS_AHEAD = Number.isFinite(DAYS_AHEAD_RAW) && DAYS_AHEAD_RAW > 0 ? DAYS_AHEAD_RAW : 14;
 
 function formatMs(ms) {
   const n = Number(ms);

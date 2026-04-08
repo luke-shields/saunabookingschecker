@@ -11,11 +11,11 @@
   "tasks": [
     {
       "label": "Sauna: setup (install deps + Playwright Chromium)",
-      "type": "shell",
-      "command": "zsh",
+      "type": "process",
+      "command": "bash",
       "args": [
         "-lc",
-        "set -euo pipefail; set +H; if ! command -v gh >/dev/null 2>&1; then if command -v brew >/dev/null 2>&1; then echo 'Installing GitHub CLI (gh) via Homebrew...'; brew install gh; else echo 'Error: GitHub CLI (gh) is not installed and Homebrew (brew) was not found.'; echo 'Install gh: https://cli.github.com/'; exit 1; fi; fi; ${workspaceFolder}/.vscode/loadNodeVersion npm ci && ${workspaceFolder}/.vscode/loadNodeVersion npx playwright install chromium"
+        "set -euo pipefail; if ! command -v gh >/dev/null 2>&1; then if command -v brew >/dev/null 2>&1; then echo \"Installing GitHub CLI (gh) via Homebrew...\"; brew install gh; else echo \"Error: GitHub CLI (gh) is not installed and Homebrew (brew) was not found.\"; echo \"Install gh: https://cli.github.com/\"; exit 1; fi; fi; ${workspaceFolder}/.vscode/loadNodeVersion npm ci && ${workspaceFolder}/.vscode/loadNodeVersion npx playwright install chromium"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -24,12 +24,9 @@
     },
     {
       "label": "Sauna: scrape booking data",
-      "type": "shell",
-      "command": "zsh",
-      "args": [
-        "-lc",
-        "${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data"
-      ],
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "scrape:booking-data"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -37,8 +34,8 @@
     },
     {
       "label": "Sauna: scrape booking data (prompt for sauna)",
-      "type": "shell",
-      "command": "zsh",
+      "type": "process",
+      "command": "bash",
       "args": [
         "-lc",
         "SAUNA=\"${input:saunaName}\"; if [[ -z \"$SAUNA\" || \"$SAUNA\" == \"ALL\" ]]; then ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data; else ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data -- --sauna \"$SAUNA\"; fi"
@@ -50,12 +47,9 @@
     },
     {
       "label": "Sauna: push bookings to database",
-      "type": "shell",
-      "command": "zsh",
-      "args": [
-        "-lc",
-        "${workspaceFolder}/.vscode/loadNodeVersion npm run push:bookings:db"
-      ],
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "push:bookings:db"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -63,12 +57,19 @@
     },
     {
       "label": "Sauna: sync csvs",
-      "type": "shell",
-      "command": "zsh",
-      "args": [
-        "-lc",
-        "${workspaceFolder}/.vscode/loadNodeVersion npm run sync:csvs"
-      ],
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "sync:csvs"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: generate opening times weekly (3-week heuristic)",
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "generate:opening-times-weekly"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -76,12 +77,9 @@
     },
     {
       "label": "Sauna: update (sync csvs + scrape booking data + push bookings to database)",
-      "type": "shell",
-      "command": "zsh",
-      "args": [
-        "-lc",
-        "${workspaceFolder}/.vscode/loadNodeVersion npm run update"
-      ],
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "update"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -89,11 +87,11 @@
     },
     {
       "label": "Sauna: update via GitHub Action + pull DB from data branch",
-      "type": "shell",
-      "command": "zsh",
+      "type": "process",
+      "command": "bash",
       "args": [
         "-lc",
-        "set -euo pipefail; set +H; if command -v gh >/dev/null 2>&1; then :; else echo 'Error: GitHub CLI (gh) is not installed.'; echo 'Install: brew install gh (or https://cli.github.com/)'; exit 1; fi; if gh auth status -h github.com >/dev/null 2>&1; then :; else echo 'Error: gh is installed but not authenticated.'; echo 'Run: gh auth login'; exit 1; fi; gh workflow run \"Hourly Update\" && echo \"Triggered workflow. Waiting for completion...\" && gh run watch --workflow=\"Hourly Update\" --exit-status && git fetch origin data && git checkout origin/data -- sauna_bookings.sqlite"
+        "set -euo pipefail; if command -v gh >/dev/null 2>&1; then :; else echo \"Error: GitHub CLI (gh) is not installed.\"; echo \"Install: brew install gh (or https://cli.github.com/)\"; exit 1; fi; if gh auth status -h github.com >/dev/null 2>&1; then :; else echo \"Error: gh is installed but not authenticated.\"; echo \"Run: gh auth login\"; exit 1; fi; OUT=$(gh workflow run \"Hourly Update\" 2>&1 | tee /dev/stderr); echo \"Triggered workflow. Waiting for completion...\"; RUN_ID=$(printf '%s' \"$OUT\" | grep -oE '(gh run view [0-9]+|actions/runs/[0-9]+)' | tail -n 1 | grep -oE '[0-9]+' | tail -n 1); if [[ -z \"$RUN_ID\" ]]; then echo \"Error: Could not determine the run id from gh output.\"; echo \"Try: gh run list\"; exit 1; fi; echo \"Watching run $RUN_ID\"; gh run watch \"$RUN_ID\" --exit-status; git fetch origin data; git checkout origin/data -- sauna_bookings.sqlite"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
