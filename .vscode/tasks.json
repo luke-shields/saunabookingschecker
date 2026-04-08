@@ -73,6 +73,19 @@
         "cwd": "${workspaceFolder}"
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Sauna: update via GitHub Action + pull DB from data branch",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "gh workflow run \"Hourly Update\" && echo \"Triggered workflow. Waiting for completion...\" && gh run watch --workflow=\"Hourly Update\" --exit-status && git fetch origin data && git checkout origin/data -- sauna_bookings.sqlite"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
     }
   ]
 }
