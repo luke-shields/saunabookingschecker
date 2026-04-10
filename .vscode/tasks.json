@@ -10,6 +10,19 @@
   ],
   "tasks": [
     {
+      "label": "Sauna: setup (install deps + Playwright Chromium)",
+      "type": "shell",
+      "command": "zsh",
+      "args": [
+        "-lc",
+        "set -euo pipefail; set +H; if ! command -v gh >/dev/null 2>&1; then if command -v brew >/dev/null 2>&1; then echo 'Installing GitHub CLI (gh) via Homebrew...'; brew install gh; else echo 'Error: GitHub CLI (gh) is not installed and Homebrew (brew) was not found.'; echo 'Install gh: https://cli.github.com/'; exit 1; fi; fi; ${workspaceFolder}/.vscode/loadNodeVersion npm ci && ${workspaceFolder}/.vscode/loadNodeVersion npx playwright install chromium"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Sauna: scrape booking data",
       "type": "shell",
       "command": "zsh",
@@ -80,7 +93,7 @@
       "command": "zsh",
       "args": [
         "-lc",
-        "gh workflow run \"Hourly Update\" && echo \"Triggered workflow. Waiting for completion...\" && gh run watch --workflow=\"Hourly Update\" --exit-status && git fetch origin data && git checkout origin/data -- sauna_bookings.sqlite"
+        "set -euo pipefail; set +H; if command -v gh >/dev/null 2>&1; then :; else echo 'Error: GitHub CLI (gh) is not installed.'; echo 'Install: brew install gh (or https://cli.github.com/)'; exit 1; fi; if gh auth status -h github.com >/dev/null 2>&1; then :; else echo 'Error: gh is installed but not authenticated.'; echo 'Run: gh auth login'; exit 1; fi; gh workflow run \"Hourly Update\" && echo \"Triggered workflow. Waiting for completion...\" && gh run watch --workflow=\"Hourly Update\" --exit-status && git fetch origin data && git checkout origin/data -- sauna_bookings.sqlite"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
