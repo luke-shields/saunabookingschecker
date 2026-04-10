@@ -220,14 +220,12 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
   const insertObs = db.prepare(
     `INSERT INTO observations (
       scrape_run_id,
-      period_index,
-      period_label,
-      period_suffix,
+      sauna_name,
       date,
       time,
       spots_left,
       spots_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
   );
 
   const tx = db.transaction(() => {
@@ -258,11 +256,8 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
       const runId = Number(info.lastInsertRowid);
 
       const periods = Array.isArray(doc?.periods) ? doc.periods : [];
-      for (let p = 0; p < periods.length; p++) {
-        const period = periods[p] || {};
-        const periodLabel = period.label == null ? null : String(period.label);
-        const periodSuffix = period.suffix == null ? null : String(period.suffix);
-        const sessions = Array.isArray(period.sessions) ? period.sessions : [];
+      for (const period of periods) {
+        const sessions = Array.isArray(period?.sessions) ? period.sessions : [];
 
         for (const s of sessions) {
           const date = s?.date == null ? null : String(s.date).trim();
@@ -271,16 +266,7 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
           const spotsLeftNum = Number.isFinite(spotsLeft) ? spotsLeft : null;
           const spotsText = s?.spotsText == null ? null : String(s.spotsText);
 
-          insertObs.run(
-            runId,
-            p,
-            periodLabel,
-            periodSuffix,
-            date,
-            time,
-            spotsLeftNum,
-            spotsText,
-          );
+          insertObs.run(runId, saunaName, date, time, spotsLeftNum, spotsText);
         }
       }
     }
