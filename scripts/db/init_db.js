@@ -24,15 +24,14 @@ export function initDb(db) {
     CREATE TABLE IF NOT EXISTS observations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       scrape_run_id INTEGER NOT NULL,
-      period_index INTEGER NOT NULL,
-      period_label TEXT,
-      period_suffix TEXT,
+      sauna_name TEXT NOT NULL,
       date TEXT,
       time TEXT,
       spots_left INTEGER,
       spots_text TEXT,
       created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      FOREIGN KEY (scrape_run_id) REFERENCES scrape_runs(id)
+      FOREIGN KEY (scrape_run_id) REFERENCES scrape_runs(id),
+      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
     );
 
     CREATE INDEX IF NOT EXISTS idx_observations_run ON observations(scrape_run_id);
@@ -78,6 +77,62 @@ export function initDb(db) {
     CREATE INDEX IF NOT EXISTS idx_bookings_sauna_date ON bookings(sauna_name, date);
   `);
 
+  const obsCols = db
+    .prepare("PRAGMA table_info('observations')")
+    .all()
+    .map((c) => String(c.name));
+
+  const hasPeriodCols =
+    obsCols.includes('period_index') ||
+    obsCols.includes('period_label') ||
+    obsCols.includes('period_suffix');
+
+  if (hasPeriodCols || !obsCols.includes('sauna_name')) {
+    db.exec(`DROP VIEW IF EXISTS v_sessions_latest_with_inference;`);
+
+    const saunaNameExpr = obsCols.includes('sauna_name')
+      ? "COALESCE(NULLIF(o.sauna_name, ''), (SELECT sauna_name FROM scrape_runs sr WHERE sr.id = o.scrape_run_id), 'Unknown')"
+      : "COALESCE((SELECT sauna_name FROM scrape_runs sr WHERE sr.id = o.scrape_run_id), 'Unknown')";
+
+    const createdAtExpr = obsCols.includes('created_at')
+      ? 'o.created_at'
+      : 'CURRENT_TIMESTAMP';
+
+    db.exec(`
+      DROP TABLE IF EXISTS observations__new;
+      CREATE TABLE IF NOT EXISTS observations__new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scrape_run_id INTEGER NOT NULL,
+        sauna_name TEXT NOT NULL,
+        date TEXT,
+        time TEXT,
+        spots_left INTEGER,
+        spots_text TEXT,
+        created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
+        FOREIGN KEY (scrape_run_id) REFERENCES scrape_runs(id),
+        FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
+      );
+
+      INSERT INTO observations__new (id, scrape_run_id, sauna_name, date, time, spots_left, spots_text, created_at)
+      SELECT
+        o.id,
+        o.scrape_run_id,
+        ${saunaNameExpr} AS sauna_name,
+        o.date,
+        o.time,
+        o.spots_left,
+        o.spots_text,
+        ${createdAtExpr} AS created_at
+      FROM observations o;
+
+      DROP TABLE observations;
+      ALTER TABLE observations__new RENAME TO observations;
+
+      CREATE INDEX IF NOT EXISTS idx_observations_run ON observations(scrape_run_id);
+      CREATE INDEX IF NOT EXISTS idx_observations_slot ON observations(date, time);
+    `);
+  }
+
   db.exec(`
     DROP VIEW IF EXISTS v_sessions_latest_with_inference;
     CREATE VIEW v_sessions_latest_with_inference AS
@@ -86,11 +141,6 @@ export function initDb(db) {
         SELECT date('now', 'localtime')
         UNION ALL
         SELECT date(d, '+1 day') FROM dates WHERE d < date('now', 'localtime', '+9 day')
-      ),
-      latest_run AS (
-        SELECT sauna_name, MAX(id) AS scrape_run_id
-        FROM scrape_runs
-        GROUP BY sauna_name
       ),
       latest_obs_ranked AS (
         SELECT
@@ -103,10 +153,9 @@ export function initDb(db) {
           o.spots_text AS spots_text,
           ROW_NUMBER() OVER (
             PARTITION BY sr.sauna_name, o.date, o.time
-            ORDER BY o.id DESC
+            ORDER BY (o.spots_left IS NULL) ASC, o.id DESC
           ) AS rn
         FROM scrape_runs sr
-        JOIN latest_run lr ON lr.scrape_run_id = sr.id
         JOIN observations o ON o.scrape_run_id = sr.id
         WHERE o.date IS NOT NULL AND o.time IS NOT NULL
       ),
@@ -289,7 +338,11 @@ export function initDb(db) {
       week_start,
       date(week_start, '+6 days') AS week_end,
       COUNT(*) AS sessions,
-      AVG(percent_full) AS avg_percent_full,
+      CASE
+        WHEN SUM(seats_per_session) IS NULL OR SUM(seats_per_session) = 0 THEN NULL
+        WHEN SUM(seats_booked) IS NULL THEN NULL
+        ELSE (100.0 * SUM(seats_booked) / SUM(seats_per_session))
+      END AS avg_percent_full,
       SUM(seats_per_session) AS total_seats_available,
       SUM(seats_booked) AS total_seats_booked
     FROM base

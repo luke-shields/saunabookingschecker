@@ -159,14 +159,26 @@ function refreshBookingsFromLatest(db) {
     FROM v_sessions_latest_with_inference
     WHERE date IS NOT NULL AND time IS NOT NULL
     ON CONFLICT(sauna_name, date, time) DO UPDATE SET
-      scrape_run_id = excluded.scrape_run_id,
-      scraped_at = excluded.scraped_at,
+      scrape_run_id = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.scrape_run_id
+        ELSE excluded.scrape_run_id
+      END,
+      scraped_at = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.scraped_at
+        ELSE excluded.scraped_at
+      END,
       is_expected = excluded.is_expected,
       is_inferred = excluded.is_inferred,
       seats_per_session = excluded.seats_per_session,
-      spots_left = excluded.spots_left,
-      seats_booked = excluded.seats_booked,
-      percent_full = excluded.percent_full,
+      spots_left = COALESCE(excluded.spots_left, bookings.spots_left),
+      seats_booked = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.seats_booked
+        ELSE excluded.seats_booked
+      END,
+      percent_full = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.percent_full
+        ELSE excluded.percent_full
+      END,
       updated_at = CURRENT_TIMESTAMP;
 
     DELETE FROM bookings
@@ -220,14 +232,12 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
   const insertObs = db.prepare(
     `INSERT INTO observations (
       scrape_run_id,
-      period_index,
-      period_label,
-      period_suffix,
+      sauna_name,
       date,
       time,
       spots_left,
       spots_text
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?)`,
   );
 
   const tx = db.transaction(() => {
@@ -258,11 +268,8 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
       const runId = Number(info.lastInsertRowid);
 
       const periods = Array.isArray(doc?.periods) ? doc.periods : [];
-      for (let p = 0; p < periods.length; p++) {
-        const period = periods[p] || {};
-        const periodLabel = period.label == null ? null : String(period.label);
-        const periodSuffix = period.suffix == null ? null : String(period.suffix);
-        const sessions = Array.isArray(period.sessions) ? period.sessions : [];
+      for (const period of periods) {
+        const sessions = Array.isArray(period?.sessions) ? period.sessions : [];
 
         for (const s of sessions) {
           const date = s?.date == null ? null : String(s.date).trim();
@@ -271,16 +278,7 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
           const spotsLeftNum = Number.isFinite(spotsLeft) ? spotsLeft : null;
           const spotsText = s?.spotsText == null ? null : String(s.spotsText);
 
-          insertObs.run(
-            runId,
-            p,
-            periodLabel,
-            periodSuffix,
-            date,
-            time,
-            spotsLeftNum,
-            spotsText,
-          );
+          insertObs.run(runId, saunaName, date, time, spotsLeftNum, spotsText);
         }
       }
     }
