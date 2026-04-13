@@ -159,14 +159,26 @@ function refreshBookingsFromLatest(db) {
     FROM v_sessions_latest_with_inference
     WHERE date IS NOT NULL AND time IS NOT NULL
     ON CONFLICT(sauna_name, date, time) DO UPDATE SET
-      scrape_run_id = excluded.scrape_run_id,
-      scraped_at = excluded.scraped_at,
+      scrape_run_id = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.scrape_run_id
+        ELSE excluded.scrape_run_id
+      END,
+      scraped_at = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.scraped_at
+        ELSE excluded.scraped_at
+      END,
       is_expected = excluded.is_expected,
       is_inferred = excluded.is_inferred,
       seats_per_session = excluded.seats_per_session,
-      spots_left = excluded.spots_left,
-      seats_booked = excluded.seats_booked,
-      percent_full = excluded.percent_full,
+      spots_left = COALESCE(excluded.spots_left, bookings.spots_left),
+      seats_booked = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.seats_booked
+        ELSE excluded.seats_booked
+      END,
+      percent_full = CASE
+        WHEN excluded.spots_left IS NULL THEN bookings.percent_full
+        ELSE excluded.percent_full
+      END,
       updated_at = CURRENT_TIMESTAMP;
 
     DELETE FROM bookings
