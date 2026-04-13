@@ -142,11 +142,6 @@ export function initDb(db) {
         UNION ALL
         SELECT date(d, '+1 day') FROM dates WHERE d < date('now', 'localtime', '+9 day')
       ),
-      latest_run AS (
-        SELECT sauna_name, MAX(id) AS scrape_run_id
-        FROM scrape_runs
-        GROUP BY sauna_name
-      ),
       latest_obs_ranked AS (
         SELECT
           sr.sauna_name AS sauna_name,
@@ -161,7 +156,6 @@ export function initDb(db) {
             ORDER BY (o.spots_left IS NULL) ASC, o.id DESC
           ) AS rn
         FROM scrape_runs sr
-        JOIN latest_run lr ON lr.scrape_run_id = sr.id
         JOIN observations o ON o.scrape_run_id = sr.id
         WHERE o.date IS NOT NULL AND o.time IS NOT NULL
       ),
@@ -344,7 +338,11 @@ export function initDb(db) {
       week_start,
       date(week_start, '+6 days') AS week_end,
       COUNT(*) AS sessions,
-      AVG(percent_full) AS avg_percent_full,
+      CASE
+        WHEN SUM(seats_per_session) IS NULL OR SUM(seats_per_session) = 0 THEN NULL
+        WHEN SUM(seats_booked) IS NULL THEN NULL
+        ELSE (100.0 * SUM(seats_booked) / SUM(seats_per_session))
+      END AS avg_percent_full,
       SUM(seats_per_session) AS total_seats_available,
       SUM(seats_booked) AS total_seats_booked
     FROM base
