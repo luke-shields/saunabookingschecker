@@ -88,6 +88,8 @@ export function initDb(db) {
     obsCols.includes('period_suffix');
 
   if (hasPeriodCols || !obsCols.includes('sauna_name')) {
+    db.exec(`DROP VIEW IF EXISTS v_sessions_latest_with_inference;`);
+
     const saunaNameExpr = obsCols.includes('sauna_name')
       ? "COALESCE(NULLIF(o.sauna_name, ''), (SELECT sauna_name FROM scrape_runs sr WHERE sr.id = o.scrape_run_id), 'Unknown')"
       : "COALESCE((SELECT sauna_name FROM scrape_runs sr WHERE sr.id = o.scrape_run_id), 'Unknown')";
@@ -156,7 +158,7 @@ export function initDb(db) {
           o.spots_text AS spots_text,
           ROW_NUMBER() OVER (
             PARTITION BY sr.sauna_name, o.date, o.time
-            ORDER BY o.id DESC
+            ORDER BY (o.spots_left IS NULL) ASC, o.id DESC
           ) AS rn
         FROM scrape_runs sr
         JOIN latest_run lr ON lr.scrape_run_id = sr.id
