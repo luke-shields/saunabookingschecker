@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { parse } from 'csv-parse/sync';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { initDb } from './db/init_db.js';
 
@@ -117,7 +117,7 @@ function readSaunaInfoCsv(filePath) {
     .filter((r) => r.url && r.url !== '.');
 }
 
-function refreshBookingsFromLatest(db) {
+export function refreshBookingsFromLatest(db) {
   db.exec(`
     INSERT INTO bookings (
       sauna_name,
@@ -311,4 +311,6 @@ function main() {
   console.log(`Done. DB: ${args.db}`);
 }
 
-main();
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

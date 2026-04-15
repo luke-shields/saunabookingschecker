@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 function parseArgs(argv) {
   const args = {
@@ -55,7 +56,7 @@ function runOrExit(cmd, args) {
   }
 }
 
-function main() {
+export function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const syncArgs = ['run', 'sync:csvs'];
@@ -83,4 +84,6 @@ function main() {
   console.log('Update: done');
 }
 
-main();
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}
