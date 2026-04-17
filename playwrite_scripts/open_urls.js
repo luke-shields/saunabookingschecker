@@ -42,12 +42,48 @@ function toIsoLocalDate(d) {
 }
 
 function parseSpotsLeft(text) {
-  const t = String(text || '').trim();
-  const m = t.match(/(\d+)\s+spots?\s+left/i);
-  if (m) return Number(m[1]);
+  const t = String(text || "").trim();
+  // "3 spots left", "1 spot left"
+  const mSpots = t.match(/(\d+)\s+spots?\s+left/i);
+  if (mSpots) return Number(mSpots[1]);
+  // "3 left", "1 left"
+  const mLeft = t.match(/\b(\d+)\s+left\b/i);
+  if (mLeft) return Number(mLeft[1]);
+  // "3 spaces left", "2 spaces remaining"
+  const mSpaces = t.match(
+    /\b(\d+)\s+(?:spaces?|seats?|places?)\s+(?:left|remaining|available)\b/i,
+  );
+  if (mSpaces) return Number(mSpaces[1]);
+  // Zero availability
   if (/no\s+spots?\s+left/i.test(t)) return 0;
-  if (/^full$/i.test(t)) return 0;
+  if (
+    /\b(?:full|sold\s*out|no\s+availability|join\s+waitlist|waitlist)\b/i.test(
+      t,
+    )
+  )
+    return 0;
   return null;
+}
+
+function normalizeTimeStr(raw) {
+  if (!raw) return null;
+  const t = String(raw).trim();
+  // Already HH:MM
+  if (/^\d{1,2}:\d{2}$/.test(t)) {
+    const [h, m] = t.split(":");
+    return `${String(Number(h)).padStart(2, "0")}:${m}`;
+  }
+  // 12-hour: "11am", "2pm", "11:30am", "2:30 PM"
+  const m12 = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$/i);
+  if (m12) {
+    let h = Number(m12[1]);
+    const mins = m12[2] ?? "00";
+    const ampm = m12[3].toLowerCase();
+    if (ampm === "pm" && h < 12) h += 12;
+    if (ampm === "am" && h === 12) h = 0;
+    return `${String(h).padStart(2, "0")}:${mins}`;
+  }
+  return t;
 }
 
 const MONTHS = {
@@ -1043,6 +1079,143 @@ const SITE_ADAPTERS = {
       return { periodLabel: periodLabel ? periodLabel.trim() : null, sessions };
     },
   },
+  blackpoolSandsSauna: {
+    key: 'blackpoolSandsSauna',
+    extractSelector: 'table.calendar-small',
+    async scrapePeriod(page) {
+      const startedAt = Date.now();
+      const sessions = [];
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const cutoff = new Date(Date.now() + DAYS_AHEAD * 86_400_000);
+
+      try {
+        const urlMatch = page.url().match(/\/calendar\/(\d{4})\/(\d{2})\//);
+        let year = urlMatch ? Number(urlMatch[1]) : today.getFullYear();
+        let month = urlMatch ? Number(urlMatch[2]) : today.getMonth() + 1;
+        const urlTemplate = page.url().replace(/\/calendar\/\d{4}\/\d{2}\//, '/calendar/YYYY/MM/');
+
+        for (let guard = 0; guard < 3; guard++) {
+          const mm = String(month).padStart(2, '0');
+          const monthUrl = urlTemplate.replace('YYYY', String(year)).replace('MM', mm);
+
+          if (guard > 0) {
+            await tracedAwait(`[blackpoolSandsSauna] goto ${year}-${mm}`, () =>
+              page.goto(monthUrl, { waitUntil: 'networkidle', timeout: 30_000 }),
+            );
+          }
+
+          await tracedAwait('[blackpoolSandsSauna] wait for calendar', () =>
+            page.waitForSelector('table.calendar-small', { timeout: 30_000 }),
+          );
+          await page.waitForTimeout(500);
+
+          // Find available (enabled) day buttons in the current month
+          const availableDays = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('table.calendar-small button.calendar-small-day.month-current'));
+            const monthNameToNum = {
+              January: 1, February: 2, March: 3, April: 4, May: 5, June: 6,
+              July: 7, August: 8, September: 9, October: 10, November: 11, December: 12,
+            };
+            return btns
+              .filter(b => !b.disabled && !b.hasAttribute('disabled'))
+              .map((b, idx) => {
+                const title = b.getAttribute('title') || b.getAttribute('aria-label') || '';
+                // e.g. "Saturday, 18 April 2026"
+                const m = title.match(/(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/);
+                let iso = null;
+                if (m) {
+                  const day = Number(m[1]);
+                  const mon = monthNameToNum[m[2]];
+                  const yr = Number(m[3]);
+                  if (mon) {
+                    iso = `${yr}-${String(mon).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  }
+                }
+                return { idx, iso, title };
+              })
+              .filter(d => d.iso);
+          });
+
+          console.log(`[blackpoolSandsSauna] month ${year}-${mm}: ${availableDays.length} available days`);
+
+          for (const day of availableDays) {
+            const d = new Date(`${day.iso}T00:00:00`);
+            if (d < today || d > cutoff) continue;
+
+            // Click the day button
+            const btn = page.locator('table.calendar-small button.calendar-small-day.month-current:not([disabled])').nth(
+              availableDays.indexOf(day),
+            );
+            try {
+              await btn.click({ force: true, timeout: 5_000 });
+            } catch (err) {
+              console.log(`[blackpoolSandsSauna] click failed for ${day.iso}: ${err.message}`);
+              continue;
+            }
+
+            // Wait for availability list to render
+            try {
+              await tracedAwait(`[blackpoolSandsSauna] wait for slots ${day.iso}`, () =>
+                page.waitForSelector('a[href*="/availability/"]', { timeout: 8_000 }),
+              );
+            } catch {
+              console.log(`[blackpoolSandsSauna] no slots rendered for ${day.iso}`);
+              continue;
+            }
+            await page.waitForTimeout(400);
+
+            const daySlots = await page.evaluate(() => {
+              const links = Array.from(document.querySelectorAll('a[href*="/availability/"]'));
+              const results = [];
+              const seen = new Set();
+              for (const a of links) {
+                const text = (a.textContent || '').replace(/\s+/g, ' ').trim();
+                if (!text) continue;
+                // Find nearest container row to get availability text
+                let container = a.closest('tr') || a.closest('li') || a.closest('div');
+                let containerText = container ? (container.textContent || '').replace(/\s+/g, ' ').trim() : text;
+                const key = `${text}|${containerText}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                results.push({ linkText: text, containerText });
+              }
+              return results;
+            });
+
+            for (const s of daySlots) {
+              // Extract time from link text, e.g. "Saturday, 18 April 2026 @ 12pm" or "12pm"
+              const timeMatch = s.linkText.match(/(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/) ||
+                                s.linkText.match(/(\d{1,2}:\d{2})/);
+              const rawTime = timeMatch ? timeMatch[1] : null;
+              sessions.push({
+                date: day.iso,
+                time: rawTime,
+                spotsText: s.containerText,
+              });
+            }
+          }
+
+          // Advance to next month
+          month++;
+          if (month > 12) { month = 1; year++; }
+          if (new Date(year, month - 1, 1) > cutoff) break;
+        }
+      } catch (err) {
+        console.log(`[blackpoolSandsSauna] scrapePeriod error: ${err.message}`);
+      }
+
+      console.log(`[blackpoolSandsSauna] scrapePeriod done: ${sessions.length} sessions in ${formatMs(Date.now() - startedAt)}`);
+      return { periodLabel: null, sessions };
+    },
+    normalizeSession(raw) {
+      return {
+        date: raw.date || null,
+        time: raw.time ? normalizeTimeStr(raw.time) : null,
+        spotsLeft: parseSpotsLeft(raw.spotsText),
+        spotsText: raw.spotsText || null,
+      };
+    },
+  },
 };
 
 // Backwards-compatible aliases (old sauna_info.csv values)
@@ -1056,6 +1229,13 @@ function getAdapter(siteKey) {
 }
 
 function normalizeSessions(siteKey, rawSessions) {
+  const adapter = SITE_ADAPTERS[siteKey];
+  if (typeof adapter?.normalizeSession === "function") {
+    return rawSessions
+      .map((s) => adapter.normalizeSession(s))
+      .filter((s) => s && (s.date || s.time || s.spotsText));
+  }
+
   return rawSessions
     .map((s) => {
       if (siteKey === 'wilder' || siteKey === 'wilder' || siteKey === 'wemburyWildSauna') {
@@ -1103,8 +1283,11 @@ function normalizeSessions(siteKey, rawSessions) {
 
       return {
         date: s.date || null,
-        time: s.time || null,
-        spotsLeft: typeof s.spotsLeft === 'number' ? s.spotsLeft : parseSpotsLeft(s.spotsText),
+        time: normalizeTimeStr(s.time),
+        spotsLeft:
+          typeof s.spotsLeft === "number"
+            ? s.spotsLeft
+            : parseSpotsLeft(s.spotsText),
         spotsText: s.spotsText || null,
       };
     })

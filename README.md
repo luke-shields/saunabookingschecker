@@ -8,6 +8,7 @@ This repo scrapes sauna booking sites (via Playwright), stores observations in S
 - npm
 - Playwright browser (Chromium)
 - (Recommended) GitHub CLI (`gh`) for triggering the GitHub Action from a VS Code task
+- Anthropic API key (only required for `generate:scraper`)
 
 ### Install GitHub CLI (optional)
 
@@ -22,6 +23,24 @@ brew install gh
 ```bash
 gh auth login
 ```
+
+## Environment variables
+
+Create a `.env` file in the project root (copied from `.env.example`):
+
+```bash
+cp .env.example .env
+```
+
+Then fill in your values:
+
+```dotenv
+# Required for the scraper generator (generate:scraper).
+# Get your key at https://console.anthropic.com/
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+The `.env` file is git-ignored and only loaded by `generate:scraper`. All other scripts work without it.
 
 ## Setup
 
@@ -143,6 +162,43 @@ npm run generate:opening-times-weekly
 Or from VS Code:
 
 - `Sauna: generate opening times weekly (3-week heuristic)`
+
+## Generating a scraper for a new site
+
+Provide a booking page URL and the script will use Claude to automatically generate a Playwright adapter, then register the site in `csvs/sauna_info.csv`.
+
+### VS Code
+
+Run the task:
+
+- `Sauna: generate scraper from URL`
+
+You will be prompted for the URL (required), sauna name, and seats per session (both optional — Claude infers them from the page if left blank).
+
+### CLI
+
+```bash
+npm run generate:scraper -- <url>
+
+# with optional overrides
+npm run generate:scraper -- <url> --name="My Sauna" --seats=8
+```
+
+Requires `ANTHROPIC_API_KEY` to be set (see [Environment variables](#environment-variables) above).
+
+### What it does
+
+1. Visits the URL with a headless Chromium browser and waits for the booking widget to render.
+2. Sends the page HTML and a screenshot to Claude.
+3. If the page uses a known platform (e.g. Acuity Scheduling, Wix Bookings), the existing adapter is reused.
+4. Otherwise Claude generates a new Playwright adapter and injects it into `playwrite_scripts/open_urls.js`.
+5. Appends a new row to `csvs/sauna_info.csv`.
+
+After running, test the new scraper with:
+
+```bash
+npm run scrape:booking-data -- --sauna="My Sauna"
+```
 
 ## Outputs
 

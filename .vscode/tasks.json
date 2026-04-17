@@ -6,6 +6,21 @@
       "type": "promptString",
       "description": "Sauna name (must match SaunaName in csvs/sauna_info.csv). Use ALL (or leave blank) to scrape everything.",
       "default": "ALL"
+    },
+    {
+      "id": "generatorUrl",
+      "type": "promptString",
+      "description": "Booking page URL to generate a scraper for"
+    },
+    {
+      "id": "generatorName",
+      "type": "promptString",
+      "description": "Sauna name (leave blank to auto-detect from page)"
+    },
+    {
+      "id": "generatorSeats",
+      "type": "promptString",
+      "description": "Seats per session (leave blank to auto-detect from page)"
     }
   ],
   "tasks": [
@@ -40,26 +55,6 @@
         "-lc",
         "SAUNA=\"${input:saunaName}\"; if [[ -z \"$SAUNA\" || \"$SAUNA\" == \"ALL\" ]]; then ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data; else ${workspaceFolder}/.vscode/loadNodeVersion npm run scrape:booking-data -- --sauna \"$SAUNA\"; fi"
       ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Sauna: push bookings to database",
-      "type": "process",
-      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
-      "args": ["npm", "run", "push:bookings:db"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Sauna: sync csvs",
-      "type": "process",
-      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
-      "args": ["npm", "run", "sync:csvs"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -106,12 +101,25 @@
       "problemMatcher": []
     },
     {
-      "label": "Sauna: update via GitHub Action + pull DB from data branch",
+      "label": "Sauna: generate scraper from URL",
       "type": "process",
       "command": "bash",
       "args": [
         "-lc",
-        "set -euo pipefail; if command -v gh >/dev/null 2>&1; then :; else echo \"Error: GitHub CLI (gh) is not installed.\"; echo \"Install: brew install gh (or https://cli.github.com/)\"; exit 1; fi; if gh auth status -h github.com >/dev/null 2>&1; then :; else echo \"Error: gh is installed but not authenticated.\"; echo \"Run: gh auth login\"; exit 1; fi; OUT=$(gh workflow run \"Hourly Update\" 2>&1 | tee /dev/stderr); echo \"Triggered workflow. Waiting for completion...\"; RUN_ID=$(printf '%s' \"$OUT\" | grep -oE '(gh run view [0-9]+|actions/runs/[0-9]+)' | tail -n 1 | grep -oE '[0-9]+' | tail -n 1); if [[ -z \"$RUN_ID\" ]]; then echo \"Error: Could not determine the run id from gh output.\"; echo \"Try: gh run list\"; exit 1; fi; echo \"Watching run $RUN_ID\"; gh run watch \"$RUN_ID\" --exit-status; git fetch origin data; git checkout origin/data -- sauna_bookings.sqlite"
+        "set -euo pipefail; URL=\"${input:generatorUrl}\"; NAME=\"${input:generatorName}\"; SEATS=\"${input:generatorSeats}\"; CMD=\"${workspaceFolder}/.vscode/loadNodeVersion npm run generate:scraper -- \\\"$URL\\\"\"; if [[ -n \"$NAME\" ]]; then CMD=\"$CMD --name=\\\"$NAME\\\"\"; fi; if [[ -n \"$SEATS\" && \"$SEATS\" != \"0\" ]]; then CMD=\"$CMD --seats=\\\"$SEATS\\\"\"; fi; eval \"$CMD\""
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Sauna: pull database from origin/data",
+      "type": "process",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "set -euo pipefail; git fetch origin data; git checkout origin/data -- sauna_bookings.sqlite"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
