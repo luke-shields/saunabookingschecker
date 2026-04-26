@@ -462,7 +462,7 @@ async function askClaude(url, siteKey, html, screenshot, existingAdapterKeys) {
   console.log(`Sending ${Math.round(truncatedHtml.length / 1024)}KB HTML + screenshot to Claude...`);
 
   const response = await client.messages.create({
-    model: 'claude-opus-4-7',
+    model: 'claude-3-5-sonnet-20241022',
     max_tokens: 8_000,
     system: [
       {
