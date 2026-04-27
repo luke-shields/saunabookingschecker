@@ -61,17 +61,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Sauna: generate opening times weekly (3-week heuristic)",
-      "type": "process",
-      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
-      "args": ["npm", "run", "generate:opening-times-weekly"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Sauna: update (sync csvs + scrape booking data + push bookings to database)",
+      "label": "Sauna: update (scrape booking data + push bookings to database)",
       "type": "process",
       "command": "${workspaceFolder}/.vscode/loadNodeVersion",
       "args": ["npm", "run", "update"],

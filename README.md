@@ -74,17 +74,10 @@ npm run update
 
 This runs:
 
-- sync opening times CSVs into SQLite
 - scrape booking data into `temp_websites/*.json`
 - harvest scraped data into `sauna_bookings.sqlite`
 
 ### Individual steps
-
-- Sync CSVs into SQLite
-
-```bash
-npm run sync:csvs
-```
 
 - Scrape booking data (writes JSON)
 
@@ -174,32 +167,10 @@ Notes:
 
 - Sauna metadata:
   - `csvs/sauna_info.csv`
-- Expected opening times (weekly):
-  - `csvs/opening_times_weekly.csv`
-- Date overrides:
-  - `csvs/opening_times_override.csv`
 
-## Generating weekly opening times (automatic)
+## Booking inference
 
-This repo can generate a suggested `opening_times_weekly.csv` by scraping the next ~3 weeks of availability.
-
-Rule used:
-
-- For each sauna + weekday + start time, if that time appears in **at least 2 of the next 3 weeks**, it is treated as a weekly session.
-
-Output:
-
-- `csvs/generated_opening_times_weekly.csv`
-
-Run:
-
-```bash
-npm run generate:opening-times-weekly
-```
-
-Or from VS Code:
-
-- `Sauna: generate opening times weekly (3-week heuristic)`
+Fully booked sessions are inferred automatically: if a session was previously observed in a scrape and then disappears (and hasn't been seen for at least 2 hours), it is marked as `Full (disappeared)` in the database. This avoids the need for manually-maintained opening-time schedules.
 
 ## Generating a scraper for a new site
 

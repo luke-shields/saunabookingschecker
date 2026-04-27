@@ -37,23 +37,6 @@ export function initDb(db) {
     CREATE INDEX IF NOT EXISTS idx_observations_run ON observations(scrape_run_id);
     CREATE INDEX IF NOT EXISTS idx_observations_slot ON observations(date, time);
 
-    CREATE TABLE IF NOT EXISTS expected_weekly_open_times (
-      sauna_name TEXT NOT NULL,
-      weekday INTEGER NOT NULL,
-      open_times_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      PRIMARY KEY (sauna_name, weekday),
-      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
-    );
-
-    CREATE TABLE IF NOT EXISTS expected_date_open_times_override (
-      sauna_name TEXT NOT NULL,
-      date TEXT NOT NULL,
-      open_times_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP),
-      PRIMARY KEY (sauna_name, date),
-      FOREIGN KEY (sauna_name) REFERENCES saunas(sauna_name)
-    );
 
     CREATE TABLE IF NOT EXISTS bookings (
       sauna_name TEXT NOT NULL,
@@ -164,119 +147,39 @@ export function initDb(db) {
         FROM latest_obs_ranked
         WHERE rn = 1
       ),
-      expected_dates AS (
-        SELECT
-          s.sauna_name AS sauna_name,
-          s.site_key AS site_key,
-          s.seats_per_session AS seats_per_session,
-          d.d AS date,
-          ((CAST(strftime('%w', d.d) AS INTEGER) + 6) % 7) AS weekday_monday0
-        FROM saunas s
-        CROSS JOIN dates d
+      previously_seen AS (
+        SELECT DISTINCT
+          sr.sauna_name,
+          o.date,
+          o.time,
+          MAX(sr.scraped_at) as last_seen_at
+        FROM scrape_runs sr
+        JOIN observations o ON o.scrape_run_id = sr.id
+        WHERE o.date IS NOT NULL 
+          AND o.time IS NOT NULL
+          AND o.date >= date('now', 'localtime')
+          AND o.date <= date('now', 'localtime', '+9 day')
+        GROUP BY sr.sauna_name, o.date, o.time
       ),
-      expected_source AS (
-        SELECT
-          ed.sauna_name AS sauna_name,
-          ed.site_key AS site_key,
-          ed.seats_per_session AS seats_per_session,
-          ed.date AS date,
-          COALESCE(ov.open_times_json, wk.open_times_json) AS open_times_json
-        FROM expected_dates ed
-        LEFT JOIN expected_date_open_times_override ov
-          ON ov.sauna_name = ed.sauna_name AND ov.date = ed.date
-        LEFT JOIN expected_weekly_open_times wk
-          ON wk.sauna_name = ed.sauna_name AND wk.weekday = ed.weekday_monday0
-      ),
-      expected_slots AS (
-        SELECT
-          es.sauna_name AS sauna_name,
-          es.site_key AS site_key,
-          es.seats_per_session AS seats_per_session,
-          es.date AS date,
-          je.value AS time
-        FROM expected_source es
-        JOIN json_each(es.open_times_json) je
-        WHERE (
-          es.date > date('now', 'localtime')
-          OR (
-            es.date = date('now', 'localtime')
-            AND je.value >= strftime('%H:%M', 'now', 'localtime')
-          )
+      disappeared_sessions AS (
+        SELECT 
+          ps.sauna_name,
+          ps.date,
+          ps.time,
+          ps.last_seen_at,
+          s.site_key,
+          s.seats_per_session
+        FROM previously_seen ps
+        JOIN saunas s ON s.sauna_name = ps.sauna_name
+        WHERE NOT EXISTS (
+          SELECT 1 FROM latest_obs lo 
+          WHERE lo.sauna_name = ps.sauna_name 
+            AND lo.date = ps.date 
+            AND lo.time = ps.time
         )
+        AND ps.last_seen_at < datetime('now', 'localtime', '-2 hours')
       ),
-      expected_joined AS (
-        SELECT
-          e.sauna_name AS sauna_name,
-          e.site_key AS site_key,
-          e.seats_per_session AS seats_per_session,
-          e.date AS date,
-          e.time AS time,
-          lo.scrape_run_id AS scrape_run_id,
-          lo.scraped_at AS scraped_at,
-          lo.spots_left AS observed_spots_left,
-          lo.spots_text AS observed_spots_text
-        FROM expected_slots e
-        LEFT JOIN latest_obs lo
-          ON lo.sauna_name = e.sauna_name AND lo.date = e.date AND lo.time = e.time
-      ),
-      expected_final AS (
-        SELECT
-          sauna_name,
-          site_key,
-          seats_per_session,
-          date,
-          time,
-          scrape_run_id,
-          scraped_at,
-          1 AS is_expected,
-          CASE
-            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
-              AND (
-                date != date('now', 'localtime')
-                OR EXISTS (
-                  SELECT 1
-                  FROM latest_obs lo2
-                  WHERE lo2.sauna_name = expected_joined.sauna_name
-                    AND lo2.date = expected_joined.date
-                    AND lo2.time < expected_joined.time
-                )
-              )
-              THEN 1
-            ELSE 0
-          END AS is_inferred,
-          CASE
-            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
-              AND (
-                date != date('now', 'localtime')
-                OR EXISTS (
-                  SELECT 1
-                  FROM latest_obs lo2
-                  WHERE lo2.sauna_name = expected_joined.sauna_name
-                    AND lo2.date = expected_joined.date
-                    AND lo2.time < expected_joined.time
-                )
-              )
-              THEN 0
-            ELSE observed_spots_left
-          END AS spots_left,
-          CASE
-            WHEN observed_spots_left IS NULL AND observed_spots_text IS NULL
-              AND (
-                date != date('now', 'localtime')
-                OR EXISTS (
-                  SELECT 1
-                  FROM latest_obs lo2
-                  WHERE lo2.sauna_name = expected_joined.sauna_name
-                    AND lo2.date = expected_joined.date
-                    AND lo2.time < expected_joined.time
-                )
-              )
-              THEN 'Full (inferred)'
-            ELSE observed_spots_text
-          END AS spots_text
-        FROM expected_joined
-      ),
-      unexpected_obs AS (
+      observed_sessions AS (
         SELECT
           lo.sauna_name AS sauna_name,
           s.site_key AS site_key,
@@ -291,14 +194,25 @@ export function initDb(db) {
           lo.spots_text AS spots_text
         FROM latest_obs lo
         JOIN saunas s ON s.sauna_name = lo.sauna_name
-        WHERE NOT EXISTS (
-          SELECT 1 FROM expected_slots e
-          WHERE e.sauna_name = lo.sauna_name AND e.date = lo.date AND e.time = lo.time
-        )
+      ),
+      disappeared_inferred AS (
+        SELECT
+          ds.sauna_name AS sauna_name,
+          ds.site_key AS site_key,
+          ds.seats_per_session AS seats_per_session,
+          ds.date AS date,
+          ds.time AS time,
+          NULL AS scrape_run_id,
+          ds.last_seen_at AS scraped_at,
+          0 AS is_expected,
+          1 AS is_inferred,
+          0 AS spots_left,
+          'Full (disappeared)' AS spots_text
+        FROM disappeared_sessions ds
       )
-    SELECT * FROM expected_final
+    SELECT * FROM observed_sessions
     UNION ALL
-    SELECT * FROM unexpected_obs;
+    SELECT * FROM disappeared_inferred;
   `);
 
   db.exec(`
