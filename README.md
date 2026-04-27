@@ -98,6 +98,39 @@ npm run scrape:booking-data
 npm run push:bookings:db
 ```
 
+## GitHub Pages Website
+
+The repository includes a live website that displays sauna booking data at `/docs` which is automatically deployed to GitHub Pages.
+
+### Features
+
+- **Live Availability**: Current session availability across all saunas
+- **Weekly Metrics**: Performance statistics and booking rates
+- **Sauna Directory**: Overview of all tracked saunas with links
+- **Responsive Design**: Works on desktop and mobile devices
+- **Auto-refresh**: Data updates hourly via GitHub Actions
+
+### Local Development
+
+Export fresh data:
+```bash
+npm run export:data
+```
+
+Serve locally:
+```bash
+npm run serve:docs
+# Or manually:
+python3 -m http.server 8080 --directory docs
+```
+
+Visit: http://localhost:8080
+
+### VS Code Tasks
+
+- `Sauna: export data for GitHub Pages` - Generate JSON data files
+- `Sauna: serve GitHub Pages locally` - Start local development server
+
 ## GitHub Actions + `data` branch (recommended for DB updates)
 
 The scheduled workflow (`.github/workflows/hourly-update.yml`) writes database updates to a dedicated branch:
@@ -108,9 +141,14 @@ On every run, the workflow:
 
 - Resets `data` to match the repo default branch (usually `main`)
 - Runs the update pipeline
-- Commits **only** `sauna_bookings.sqlite`
+- Exports data for GitHub Pages
+- Commits `sauna_bookings.sqlite` and `docs/` directory
 
 This keeps `data` up to date with `main` in terms of code/config, while avoiding constant divergence on your development branches.
+
+### GitHub Pages Deployment
+
+The `.github/workflows/github-pages.yml` workflow automatically deploys the website when the `docs/` directory is updated on the `data` branch.
 
 ### Pull the latest DB without switching branches
 

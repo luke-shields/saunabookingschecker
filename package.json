@@ -10,6 +10,8 @@
     "push:bookings:db": "node scripts/harvest_to_sqlite.js",
     "update": "node scripts/update.js",
     "generate:scraper": "node scripts/generate_scraper.js",
+    "export:data": "node scripts/export_data.js",
+    "serve:docs": "python3 -m http.server 8080 --directory docs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

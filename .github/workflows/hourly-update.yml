@@ -1,4 +1,4 @@
-name: Hourly Update
+# name: Hourly Update
 
 on:
   schedule:
@@ -59,6 +59,9 @@ jobs:
       - name: Run update
         run: npm run update
 
+      - name: Export data for GitHub Pages
+        run: npm run export:data
+
       - name: Commit and push database to data branch
         shell: bash
         run: |
@@ -67,13 +70,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add sauna_bookings.sqlite
+          git add sauna_bookings.sqlite docs/
 
 
           if git diff --cached --quiet; then
-            echo "No database changes to commit."
+            echo "No changes to commit."
           else
-            git commit -m "Hourly DB update: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git commit -m "Hourly update: DB and GitHub Pages data - $(date -u +'%Y-%m-%d %H:%M UTC')"
           fi
 
           git push --force-with-lease origin "${DATA_BRANCH}:${DATA_BRANCH}"

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sauna Bookings Live</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧖</text></svg>">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="title">🧖 Sauna Bookings</h1>
+                <p class="subtitle">Live availability across local saunas</p>
+                <div class="last-updated" id="lastUpdated">Loading...</div>
+            </div>
+        </header>
+
+        <main class="main">
+            <div class="summary-cards" id="summaryCards">
+                <!-- Summary cards will be inserted here -->
+            </div>
+
+            <div class="tabs">
+                <button class="tab-button active" data-tab="availability">🔥 Live Availability</button>
+                <button class="tab-button" data-tab="metrics">📊 Weekly Metrics</button>
+                <button class="tab-button" data-tab="saunas">🏠 Saunas</button>
+            </div>
+
+            <div class="tab-content active" id="availability">
+                <div class="sauna-grid" id="saunaGrid">
+                    <!-- Sauna availability cards will be inserted here -->
+                </div>
+            </div>
+
+            <div class="tab-content" id="metrics">
+                <div class="metrics-container" id="metricsContainer">
+                    <!-- Metrics will be inserted here -->
+                </div>
+            </div>
+
+            <div class="tab-content" id="saunas">
+                <div class="saunas-list" id="saunasList">
+                    <!-- Saunas info will be inserted here -->
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>Data updates hourly • Built with ❤️ for the sauna community</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
