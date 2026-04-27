@@ -59,9 +59,6 @@ function runOrExit(cmd, args) {
 export function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  const syncArgs = ['run', 'sync:csvs'];
-  if (args.db) syncArgs.push('--', '--db', args.db);
-
   const scrapeArgs = ['run', 'scrape:booking-data'];
   if (args.sauna.length || args.siteKey.length) {
     scrapeArgs.push('--');
@@ -71,9 +68,6 @@ export function main() {
 
   const harvestArgs = ['run', 'push:bookings:db'];
   if (args.db) harvestArgs.push('--', '--db', args.db);
-
-  console.log('Update: syncing CSVs into SQLite');
-  runOrExit('npm', syncArgs);
 
   console.log('Update: scraping booking data (JSON)');
   runOrExit('npm', scrapeArgs);
