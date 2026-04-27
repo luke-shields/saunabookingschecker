@@ -156,7 +156,7 @@
     {
       "label": "Sauna: run website",
       "type": "shell",
-      "command": "npm run export:data && npm run serve:docs",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion npm run export:data && ${workspaceFolder}/.vscode/loadNodeVersion npm run serve:docs",
       "options": {
         "cwd": "${workspaceFolder}"
       },
