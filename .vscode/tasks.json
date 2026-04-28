@@ -129,8 +129,8 @@
     {
       "label": "Sauna: serve GitHub Pages locally",
       "type": "process",
-      "command": "python3",
-      "args": ["-m", "http.server", "8080", "--directory", "docs"],
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "serve:docs"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -145,8 +145,9 @@
     },
     {
       "label": "Sauna: run website",
-      "type": "shell",
-      "command": "${workspaceFolder}/.vscode/loadNodeVersion npm run export:data && ${workspaceFolder}/.vscode/loadNodeVersion npm run serve:docs",
+      "type": "process",
+      "command": "${workspaceFolder}/.vscode/loadNodeVersion",
+      "args": ["npm", "run", "serve:docs"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

@@ -1208,11 +1208,26 @@ const SITE_ADAPTERS = {
       return { periodLabel: null, sessions };
     },
     normalizeSession(raw) {
+      const spotsText = raw.spotsText || null;
+      let spotsLeft = parseSpotsLeft(spotsText);
+      // Blackpool Sands: "Call to book" or a bare "Open Session" listing
+      // (no "X left" / waitlist indicator) means the session is empty / fully
+      // available (no bookings yet). Use a large sentinel that the harvest
+      // logic clamps to seats_per_session (=> 0 booked, 0% full).
+      if (spotsLeft === null && spotsText) {
+        const t = String(spotsText);
+        const isWaitlist = /\b(?:full|sold\s*out|join\s+waitlist|waitlist)\b/i.test(t);
+        const isCallToBook = /call\s+to\s+book/i.test(t);
+        const isOpenSession = /open\s+session/i.test(t);
+        if (!isWaitlist && (isCallToBook || isOpenSession)) {
+          spotsLeft = 9999;
+        }
+      }
       return {
         date: raw.date || null,
         time: raw.time ? normalizeTimeStr(raw.time) : null,
-        spotsLeft: parseSpotsLeft(raw.spotsText),
-        spotsText: raw.spotsText || null,
+        spotsLeft,
+        spotsText,
       };
     },
   },

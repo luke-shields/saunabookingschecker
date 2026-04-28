@@ -7,6 +7,7 @@ class SaunaBookingsApp {
             summary: {}
         };
         this.currentTab = 'availability';
+        this.historySelection = new Set();
         this.init();
     }
 
@@ -17,6 +18,7 @@ class SaunaBookingsApp {
             this.renderSummary();
             this.renderAvailability();
             this.renderMetrics();
+            this.renderHistory();
             this.renderSaunas();
         } catch (error) {
             console.error('Failed to initialize app:', error);
@@ -29,15 +31,16 @@ class SaunaBookingsApp {
         loadingElements.forEach(el => el.classList.add('loading'));
 
         try {
-            const [sessions, saunas, weeklyMetrics, overallMetrics, summary] = await Promise.all([
+            const [sessions, saunas, weeklyMetrics, overallMetrics, history, summary] = await Promise.all([
                 fetch('data/sessions.json').then(r => r.json()),
                 fetch('data/saunas.json').then(r => r.json()),
                 fetch('data/metrics-weekly.json').then(r => r.json()),
                 fetch('data/metrics-overall.json').then(r => r.json()),
+                fetch('data/history.json').then(r => r.json()).catch(() => ({})),
                 fetch('data/summary.json').then(r => r.json())
             ]);
 
-            this.data = { sessions, saunas, weeklyMetrics, overallMetrics, summary };
+            this.data = { sessions, saunas, weeklyMetrics, overallMetrics, history, summary };
             console.log('Data loaded successfully:', this.data);
         } catch (error) {
             console.error('Error loading data:', error);
@@ -115,12 +118,19 @@ class SaunaBookingsApp {
             const sessionsByDate = this.groupSessionsByDate(saunaSessions);
 
             const dateGroups = Object.entries(sessionsByDate).map(([date, dateSessions]) => {
+                const totals = this.summariseDay(dateSessions);
                 const sessionsHtml = dateSessions.map(session => this.renderSession(session)).join('');
+                const summaryText = totals.totalSeats > 0
+                    ? `${totals.totalBooked} / ${totals.totalSeats} booked`
+                    : `${dateSessions.length} session${dateSessions.length === 1 ? '' : 's'}`;
                 return `
-                    <div class="sessions-by-date">
-                        <div class="date-header">${this.formatDate(date)}</div>
+                    <details class="sessions-by-date">
+                        <summary class="date-header">
+                            <span class="date-header-label">${this.formatDate(date)}</span>
+                            <span class="date-header-summary">${summaryText}</span>
+                        </summary>
                         <div class="sessions-list">${sessionsHtml}</div>
-                    </div>
+                    </details>
                 `;
             }).join('');
 
@@ -150,13 +160,16 @@ class SaunaBookingsApp {
 
         if (session.spots_left === null) {
             sessionClass += ' unknown';
-            spotsText = session.spots_text || 'Unknown';
+            spotsText = 'Unknown';
         } else if (session.spots_left === 0) {
             sessionClass += ' full';
             spotsText = 'Full';
         } else {
             sessionClass += ' available';
-            spotsText = `${session.spots_left} left`;
+            const displaySpots = session.seats_per_session != null
+                ? Math.min(session.spots_left, session.seats_per_session)
+                : session.spots_left;
+            spotsText = `${displaySpots} left`;
         }
 
         const time = session.session_time.substring(0, 5); // HH:MM format
@@ -191,12 +204,16 @@ class SaunaBookingsApp {
                                 <h3 class="metric-sauna-name">${metric.sauna_name}</h3>
                                 <div class="metric-stats">
                                     <div class="stat-row">
-                                        <span class="stat-value">${metric.total_sessions}</span>
-                                        <span class="stat-label">Total Sessions</span>
+                                        <span class="stat-value">${metric.avg_sessions_per_week != null ? metric.avg_sessions_per_week.toFixed(1) : '—'}</span>
+                                        <span class="stat-label">Avg Sessions / Week</span>
                                     </div>
                                     <div class="stat-row">
                                         <span class="stat-value">${Math.round(metric.avg_percent_full)}%</span>
                                         <span class="stat-label">Avg % Full</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-value">${metric.total_seats_available}</span>
+                                        <span class="stat-label">Seats Available</span>
                                     </div>
                                     <div class="stat-row">
                                         <span class="stat-value">${metric.total_seats_booked}</span>
@@ -266,6 +283,230 @@ class SaunaBookingsApp {
         container.innerHTML = html;
     }
 
+    renderHistory() {
+        const container = document.getElementById('historyContainer');
+        if (!container) return;
+
+        const history = this.data.history || {};
+        const saunaNames = Object.keys(history).filter(n => (history[n] || []).length > 0).sort();
+
+        if (saunaNames.length === 0) {
+            container.innerHTML = '<div class="no-sessions">No historical data available yet.</div>';
+            return;
+        }
+
+        // Default selection: all saunas on first render
+        if (this.historySelection.size === 0) {
+            saunaNames.forEach(n => this.historySelection.add(n));
+        }
+
+        // Build chip selector + body shell
+        container.innerHTML = `
+            <div class="history-controls">
+                <div class="history-chip-row" id="historyChipRow"></div>
+                <div class="history-legend">
+                    <span class="legend-label">Less booked</span>
+                    <span class="legend-gradient"></span>
+                    <span class="legend-label">More booked</span>
+                    <span class="legend-divider"></span>
+                    <span class="legend-swatch unknown"></span>
+                    <span class="legend-label">Unknown</span>
+                </div>
+            </div>
+            <div class="history-body" id="historyBody"></div>
+        `;
+
+        // Render chips
+        const chipRow = container.querySelector('#historyChipRow');
+        chipRow.innerHTML = saunaNames.map(name => `
+            <button type="button" class="history-chip ${this.historySelection.has(name) ? 'active' : ''}" data-sauna="${this.escapeAttr(name)}">
+                ${name}
+            </button>
+        `).join('') + `
+            <span class="history-chip-spacer"></span>
+            <button type="button" class="history-chip-action" data-action="all">All</button>
+            <button type="button" class="history-chip-action" data-action="none">None</button>
+        `;
+
+        chipRow.querySelectorAll('.history-chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const name = btn.getAttribute('data-sauna');
+                if (this.historySelection.has(name)) this.historySelection.delete(name);
+                else this.historySelection.add(name);
+                this.renderHistory();
+            });
+        });
+        chipRow.querySelectorAll('.history-chip-action').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const action = btn.getAttribute('data-action');
+                this.historySelection.clear();
+                if (action === 'all') saunaNames.forEach(n => this.historySelection.add(n));
+                this.renderHistory();
+            });
+        });
+
+        // Render body
+        const body = container.querySelector('#historyBody');
+        const selected = saunaNames.filter(n => this.historySelection.has(n));
+        if (selected.length === 0) {
+            body.innerHTML = '<div class="no-sessions">Select one or more saunas above to view history.</div>';
+            return;
+        }
+
+        // Compute global date range across selected saunas for aligned x-axis
+        const allDates = new Set();
+        selected.forEach(name => {
+            (history[name] || []).forEach(r => allDates.add(r.date));
+        });
+        const dateList = Array.from(allDates).sort();
+        if (dateList.length === 0) {
+            body.innerHTML = '<div class="no-sessions">No sessions on record for selected saunas.</div>';
+            return;
+        }
+
+        body.innerHTML = selected
+            .map(name => this.renderHistoryStrip(name, history[name] || [], dateList))
+            .join('');
+
+        // Attach hover tooltip
+        this.attachHistoryTooltip(body);
+    }
+
+    renderHistoryStrip(saunaName, rows, dateList) {
+        // Index rows by date -> Map<time, row>
+        const byDate = new Map();
+        const timeSet = new Set();
+        for (const r of rows) {
+            if (!r.time) continue;
+            if (!byDate.has(r.date)) byDate.set(r.date, new Map());
+            byDate.get(r.date).set(r.time, r);
+            timeSet.add(r.time);
+        }
+        const times = Array.from(timeSet).sort();
+        if (times.length === 0) {
+            return `
+                <div class="history-strip">
+                    <div class="history-strip-header"><h3>${saunaName}</h3></div>
+                    <div class="no-sessions">No timed sessions recorded.</div>
+                </div>
+            `;
+        }
+
+        const dateLabels = this.buildDateAxisLabels(dateList);
+        const dateLabelMap = new Map(dateLabels.map(l => [l.index, l.label]));
+
+        // Build header row
+        const headerCells = dateList.map((_, ci) => {
+            const label = dateLabelMap.get(ci);
+            return `<th class="haxis-date">${label || ''}</th>`;
+        }).join('');
+
+        // Build body rows (one per time slot)
+        const bodyRows = times.map(time => {
+            const cells = dateList.map(date => {
+                const row = byDate.get(date)?.get(time);
+                if (!row) return `<td class="hcell empty">&nbsp;</td>`;
+                const cap = row.seats_per_session;
+                const left = row.spots_left;
+                const pct = row.percent_full;
+                const booked = row.seats_booked;
+                let cls = 'hcell';
+                let style = '';
+                if (pct == null || left == null) {
+                    cls += ' unknown';
+                } else {
+                    style = `background:${this.percentToColor(pct)};`;
+                }
+                const tip = `${saunaName} \u2022 ${this.formatDate(date)} ${time} \u2022 ${booked ?? '?'} / ${cap ?? '?'} booked${pct != null ? ` (${Math.round(pct)}%)` : ''}`;
+                return `<td class="${cls}" style="${style}" data-tip="${this.escapeAttr(tip)}">&nbsp;</td>`;
+            }).join('');
+            return `<tr><th class="haxis-time">${time}</th>${cells}</tr>`;
+        }).join('');
+
+        // Compute summary stats
+        const known = rows.filter(r => r.percent_full != null);
+        const avgPct = known.length ? (known.reduce((s, r) => s + r.percent_full, 0) / known.length) : null;
+        const totalSessions = rows.length;
+        const dateSpan = `${this.formatDate(dateList[0])} \u2013 ${this.formatDate(dateList[dateList.length - 1])}`;
+
+        return `
+            <div class="history-strip">
+                <div class="history-strip-header">
+                    <h3>${saunaName}</h3>
+                    <div class="history-strip-meta">
+                        <span>${totalSessions} sessions</span>
+                        <span>\u2022</span>
+                        <span>${dateSpan}</span>
+                        ${avgPct != null ? `<span>\u2022</span><span>avg ${Math.round(avgPct)}% full</span>` : ''}
+                    </div>
+                </div>
+                <div class="history-grid-scroll">
+                    <table class="history-table">
+                        <thead><tr><th></th>${headerCells}</tr></thead>
+                        <tbody>${bodyRows}</tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+
+    buildDateAxisLabels(dateList) {
+        const labels = [];
+        const total = dateList.length;
+        // For small datasets show every date, for larger ones show every few days
+        const step = total <= 14 ? 1 : total <= 60 ? 3 : 7;
+        let lastMonth = null;
+        for (let i = 0; i < total; i++) {
+            if (i % step !== 0 && i !== total - 1) continue;
+            const d = new Date(dateList[i] + 'T00:00:00');
+            const day = d.getDate();
+            const m = d.getMonth();
+            const showMonth = m !== lastMonth;
+            lastMonth = m;
+            const label = showMonth
+                ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+                : String(day);
+            labels.push({ index: i, label });
+        }
+        return labels;
+    }
+
+    percentToColor(pct) {
+        // 0% = light teal, 100% = deep red, smooth HSL interpolation.
+        const p = Math.max(0, Math.min(100, pct)) / 100;
+        // Hue from 170 (teal) -> 0 (red); saturation 65%; lightness 90% -> 50%.
+        const hue = 170 - 170 * p;
+        const sat = 65;
+        const light = 90 - 40 * p;
+        return `hsl(${hue.toFixed(0)}, ${sat}%, ${light.toFixed(0)}%)`;
+    }
+
+    attachHistoryTooltip(root) {
+        let tip = document.getElementById('historyTooltip');
+        if (!tip) {
+            tip = document.createElement('div');
+            tip.id = 'historyTooltip';
+            tip.className = 'history-tooltip';
+            document.body.appendChild(tip);
+        }
+        const show = (e) => {
+            const target = e.target.closest('.hcell[data-tip]');
+            if (!target) { tip.style.opacity = '0'; return; }
+            tip.textContent = target.getAttribute('data-tip');
+            tip.style.opacity = '1';
+            const r = target.getBoundingClientRect();
+            tip.style.left = `${r.left + r.width / 2 + window.scrollX}px`;
+            tip.style.top = `${r.top + window.scrollY - 8}px`;
+        };
+        const hide = () => { tip.style.opacity = '0'; };
+        root.addEventListener('mousemove', show);
+        root.addEventListener('mouseleave', hide);
+    }
+
+    escapeAttr(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
     renderSaunas() {
         const container = document.getElementById('saunasList');
         const { saunas } = this.data;
@@ -290,6 +531,20 @@ class SaunaBookingsApp {
         `).join('');
 
         container.innerHTML = saunaItems;
+    }
+
+    summariseDay(sessions) {
+        let totalSeats = 0;
+        let totalBooked = 0;
+        for (const s of sessions) {
+            const cap = s.seats_per_session;
+            if (cap == null) continue;
+            if (s.spots_left == null) continue;
+            const left = Math.max(0, Math.min(s.spots_left, cap));
+            totalSeats += cap;
+            totalBooked += (cap - left);
+        }
+        return { totalSeats, totalBooked };
     }
 
     groupSessionsByDate(sessions) {

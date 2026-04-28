@@ -58,11 +58,40 @@ function exportData() {
       LIMIT 200
     `).all();
 
+    // Export full historical bookings per sauna (every recorded session)
+    const history = db.prepare(`
+      SELECT
+        sauna_name,
+        date,
+        time,
+        seats_per_session,
+        spots_left,
+        seats_booked,
+        percent_full
+      FROM bookings
+      WHERE seats_per_session IS NOT NULL
+      ORDER BY sauna_name, date, time
+    `).all();
+
+    // Group history by sauna for compact frontend consumption
+    const historyBySauna = history.reduce((acc, row) => {
+      if (!acc[row.sauna_name]) acc[row.sauna_name] = [];
+      acc[row.sauna_name].push({
+        date: row.date,
+        time: row.time ? row.time.substring(0, 5) : null,
+        seats_per_session: row.seats_per_session,
+        spots_left: row.spots_left,
+        seats_booked: row.seats_booked,
+        percent_full: row.percent_full,
+      });
+      return acc;
+    }, {});
+
     // Export overall metrics per sauna
     const overallMetrics = db.prepare(`
       SELECT 
         sauna_name,
-        COUNT(*) as total_sessions,
+        AVG(sessions) as avg_sessions_per_week,
         AVG(avg_percent_full) as avg_percent_full,
         SUM(total_seats_available) as total_seats_available,
         SUM(total_seats_booked) as total_seats_booked,
@@ -99,6 +128,7 @@ function exportData() {
       'data/saunas.json': saunas,
       'data/metrics-weekly.json': weeklyMetrics,
       'data/metrics-overall.json': overallMetrics,
+      'data/history.json': historyBySauna,
       'data/summary.json': summary
     };
 

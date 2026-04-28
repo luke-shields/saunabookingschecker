@@ -141,7 +141,12 @@ export function refreshBookingsFromLatest(db) {
       is_expected,
       is_inferred,
       seats_per_session,
-      spots_left,
+      CASE
+        WHEN spots_left IS NULL THEN NULL
+        WHEN seats_per_session IS NOT NULL AND seats_per_session > 0 AND spots_left > seats_per_session THEN seats_per_session
+        WHEN spots_left < 0 THEN 0
+        ELSE spots_left
+      END AS spots_left,
       CASE
         WHEN seats_per_session IS NULL OR seats_per_session <= 0 THEN NULL
         WHEN spots_left IS NULL THEN NULL
