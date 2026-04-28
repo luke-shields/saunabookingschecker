@@ -150,13 +150,16 @@ class SaunaBookingsApp {
 
         if (session.spots_left === null) {
             sessionClass += ' unknown';
-            spotsText = session.spots_text || 'Unknown';
+            spotsText = 'Unknown';
         } else if (session.spots_left === 0) {
             sessionClass += ' full';
             spotsText = 'Full';
         } else {
             sessionClass += ' available';
-            spotsText = `${session.spots_left} left`;
+            const displaySpots = session.seats_per_session != null
+                ? Math.min(session.spots_left, session.seats_per_session)
+                : session.spots_left;
+            spotsText = `${displaySpots} left`;
         }
 
         const time = session.session_time.substring(0, 5); // HH:MM format
@@ -191,12 +194,16 @@ class SaunaBookingsApp {
                                 <h3 class="metric-sauna-name">${metric.sauna_name}</h3>
                                 <div class="metric-stats">
                                     <div class="stat-row">
-                                        <span class="stat-value">${metric.total_sessions}</span>
-                                        <span class="stat-label">Total Sessions</span>
+                                        <span class="stat-value">${metric.avg_sessions_per_week != null ? metric.avg_sessions_per_week.toFixed(1) : '—'}</span>
+                                        <span class="stat-label">Avg Sessions / Week</span>
                                     </div>
                                     <div class="stat-row">
                                         <span class="stat-value">${Math.round(metric.avg_percent_full)}%</span>
                                         <span class="stat-label">Avg % Full</span>
+                                    </div>
+                                    <div class="stat-row">
+                                        <span class="stat-value">${metric.total_seats_available}</span>
+                                        <span class="stat-label">Seats Available</span>
                                     </div>
                                     <div class="stat-row">
                                         <span class="stat-value">${metric.total_seats_booked}</span>

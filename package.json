@@ -9,7 +9,7 @@
     "update": "node scripts/update.js",
     "generate:scraper": "node scripts/generate_scraper.js",
     "export:data": "node scripts/export_data.js",
-    "serve:docs": "python3 -m http.server 8080 --directory docs",
+    "serve:docs": "npm run export:data && live-server docs --port=8080 --watch=docs/data",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -21,6 +21,7 @@
     "playwright": "^1.52.0"
   },
   "devDependencies": {
+    "live-server": "^1.2.2",
     "vitest": "^2.1.9"
   }
 }

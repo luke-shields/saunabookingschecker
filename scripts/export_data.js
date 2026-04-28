@@ -62,7 +62,7 @@ function exportData() {
     const overallMetrics = db.prepare(`
       SELECT 
         sauna_name,
-        COUNT(*) as total_sessions,
+        AVG(sessions) as avg_sessions_per_week,
         AVG(avg_percent_full) as avg_percent_full,
         SUM(total_seats_available) as total_seats_available,
         SUM(total_seats_booked) as total_seats_booked,
