@@ -3,3 +3,6 @@ node_modules
 temp_websites
 .env
 docs/data/
+sauna_bookings.sqlite
+sauna_bookings.sqlite-shm
+sauna_bookings.sqlite-wal
