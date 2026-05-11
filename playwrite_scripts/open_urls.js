@@ -161,11 +161,13 @@ function readSaunaInfoCsv(filePath) {
       const name = getCsvField(r, 'saunaname');
       const url = getCsvField(r, 'url');
       const siteKey = getCsvField(r, 'sitekey');
+      const location = getCsvField(r, 'location');
       return {
         name: typeof name === 'string' ? name.trim() : String(name ?? '').trim(),
         url: typeof url === 'string' ? url.trim() : String(url ?? '').trim(),
         siteKey:
           typeof siteKey === 'string' ? siteKey.trim() : String(siteKey ?? '').trim(),
+        location: location ? String(location).trim() : null,
       };
     })
     .filter((r) => r.url && r.url !== '.');
@@ -1247,12 +1249,19 @@ function normalizeSessions(siteKey, rawSessions) {
   const adapter = SITE_ADAPTERS[siteKey];
   if (typeof adapter?.normalizeSession === "function") {
     return rawSessions
-      .map((s) => adapter.normalizeSession(s))
+      .map((s) => {
+        const norm = adapter.normalizeSession(s);
+        // Preserve location from raw session if adapter didn't set it
+        if (norm && s.location && !norm.location) norm.location = s.location;
+        return norm;
+      })
       .filter((s) => s && (s.date || s.time || s.spotsText));
   }
 
   return rawSessions
     .map((s) => {
+      const loc = s.location || null;
+
       if (siteKey === 'wilder' || siteKey === 'wilder' || siteKey === 'wemburyWildSauna') {
         const dateTime = s.dateTime || null;
         const date = dateTime ? String(dateTime).slice(0, 10) : null;
@@ -1261,6 +1270,7 @@ function normalizeSessions(siteKey, rawSessions) {
           time: s.time || null,
           spotsLeft: parseSpotsLeft(s.spotsText),
           spotsText: s.spotsText || null,
+          ...(loc && { location: loc }),
         };
       }
 
@@ -1271,6 +1281,7 @@ function normalizeSessions(siteKey, rawSessions) {
           time: s.time || null,
           spotsLeft: parseSpotsLeft(s.spotsText),
           spotsText: s.spotsText || null,
+          ...(loc && { location: loc }),
         };
       }
 
@@ -1282,6 +1293,7 @@ function normalizeSessions(siteKey, rawSessions) {
           time: s.time || null,
           spotsLeft: parseSpotsLeft(s.spotsText),
           spotsText: s.spotsText || null,
+          ...(loc && { location: loc }),
         };
       }
 
@@ -1293,6 +1305,7 @@ function normalizeSessions(siteKey, rawSessions) {
           time: s.time || null,
           spotsLeft: parseSpotsLeft(s.spotsText),
           spotsText: s.spotsText || null,
+          ...(loc && { location: loc }),
         };
       }
 
@@ -1304,6 +1317,7 @@ function normalizeSessions(siteKey, rawSessions) {
             ? s.spotsLeft
             : parseSpotsLeft(s.spotsText),
         spotsText: s.spotsText || null,
+        ...(loc && { location: loc }),
       };
     })
     .filter((s) => s.date || s.time || s.spotsText);
@@ -1403,60 +1417,71 @@ async function tryWaitForPeriodChange(page, sauna, adapter, beforeFragmentHtml) 
   }
 }
 
+// ── Group saunas by URL to avoid scraping the same page multiple times ─────
+const urlGroups = new Map();
 for (let i = 0; i < saunas.length; i++) {
   const sauna = saunas[i];
+  const key = sauna.url;
+  if (!urlGroups.has(key)) urlGroups.set(key, []);
+  urlGroups.get(key).push({ ...sauna, _index: i });
+}
+
+function filterSessionsByLocation(sessions, locationFilter) {
+  if (!locationFilter) return sessions;
+  const loc = locationFilter.toLowerCase();
+  return sessions.filter((s) => {
+    if (!s.location) return false;
+    return String(s.location).toLowerCase() === loc;
+  });
+}
+
+for (const [url, group] of urlGroups) {
+  // Use the first sauna's siteKey for the adapter (all saunas sharing a URL must use the same adapter)
+  const primarySauna = group[0];
+  const adapter = getAdapter(primarySauna.siteKey);
   const page = await context.newPage();
+  const urlStartedAt = Date.now();
 
-  const saunaStartedAt = Date.now();
-  const adapter = getAdapter(sauna.siteKey);
-
-  console.log(`Scraping JSON: ${sauna.name} -> ${sauna.url}`);
+  const hasLocations = group.some((s) => s.location);
+  console.log(`Scraping JSON: ${url} (${group.length} sauna(s)${hasLocations ? ', multi-location' : ''})`);
   console.log(`Scraping JSON: using adapter=${adapter.key}`);
-  await tracedAwait(`[main] page.goto ${sauna.name}`, () =>
-    page.goto(sauna.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }),
+
+  await tracedAwait(`[main] page.goto ${primarySauna.name}`, () =>
+    page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 }),
   );
   try {
-    await tracedAwait(`[main] waitForLoadState networkidle ${sauna.name}`, () =>
+    await tracedAwait(`[main] waitForLoadState networkidle ${primarySauna.name}`, () =>
       page.waitForLoadState('networkidle', { timeout: 15_000 }),
     );
   } catch {
     // ignore (some sites keep long-polling / analytics connections open)
   }
-  console.log(`Scraping JSON: page loaded in ${formatMs(Date.now() - saunaStartedAt)}`);
+  console.log(`Scraping JSON: page loaded in ${formatMs(Date.now() - urlStartedAt)}`);
 
-  let baseName = toSafeFileName(sauna.name) || `sauna_${i + 1}`;
-  if (usedNames.has(baseName)) baseName = `${baseName}_${i + 1}`;
-  usedNames.add(baseName);
-
-  const result = {
-    saunaName: sauna.name,
-    url: sauna.url,
-    siteKey: adapter.key,
-    scrapedAt: new Date().toISOString(),
-    periods: [],
-    errors: [],
-  };
+  // Scrape all periods for this URL once
+  const allPeriods = [];
+  const allErrors = [];
 
   try {
     const t0 = Date.now();
-    const current = await tracedAwait(`[main] adapter.scrapePeriod current ${sauna.name} (${adapter.key})`, () =>
+    const current = await tracedAwait(`[main] adapter.scrapePeriod current (${adapter.key})`, () =>
       adapter.scrapePeriod(page),
     );
     console.log(
       `Scraping JSON: scraped current period in ${formatMs(Date.now() - t0)} (rawSessions=${(current.sessions || []).length})`,
     );
-    result.periods.push({
+    allPeriods.push({
       label: current.periodLabel || null,
       sessions: filterSessionsToNextDays(
         normalizeSessions(adapter.key, current.sessions || []),
         DAYS_AHEAD,
       ),
     });
-    console.log(`Scraping JSON: current period sessions(after normalize/filter)=${result.periods[0].sessions.length}`);
+    console.log(`Scraping JSON: current period sessions(after normalize/filter)=${allPeriods[0].sessions.length}`);
   } catch (e) {
     const message =
       e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
-    result.errors.push({ stage: 'scrape_current', message });
+    allErrors.push({ stage: 'scrape_current', message });
   }
 
   if (adapter.nextSelector) {
@@ -1474,7 +1499,6 @@ for (let i = 0; i < saunas.length; i++) {
       console.log(`Next period: clicking ${adapter.nextSelector}`);
       await nextButton.click({ timeout: 30_000, force: true });
 
-      // Prefer polling the adapter key getter (more reliable than in-page waitForFunction)
       let changed = false;
       if (beforeKey && adapter.getPeriodKey) {
         changed = await waitForPeriodKeyChange({
@@ -1486,7 +1510,6 @@ for (let i = 0; i < saunas.length; i++) {
       }
 
       if (!changed && adapter.extractSelector && beforeFragment) {
-        // Fallback: just wait for some DOM churn, but don't fail the scrape if it doesn't happen
         try {
           await page.waitForFunction(
             ({ selector, before }) => {
@@ -1503,7 +1526,7 @@ for (let i = 0; i < saunas.length; i++) {
       }
 
       if (!changed) {
-        result.errors.push({
+        allErrors.push({
           stage: `wait_${suffix}`,
           message: 'Timed out waiting for period key/DOM change; attempting scrape anyway.',
         });
@@ -1513,7 +1536,7 @@ for (let i = 0; i < saunas.length; i++) {
       console.log(
         `Scraping JSON: scraped ${suffix} period (rawSessions=${(next.sessions || []).length})`,
       );
-      result.periods.push({
+      allPeriods.push({
         label: next.periodLabel || null,
         sessions: filterSessionsToNextDays(
           normalizeSessions(adapter.key, next.sessions || []),
@@ -1521,28 +1544,53 @@ for (let i = 0; i < saunas.length; i++) {
         ),
       });
       console.log(
-        `Scraping JSON: ${suffix} period sessions(after normalize/filter)=${result.periods[result.periods.length - 1].sessions.length}`,
+        `Scraping JSON: ${suffix} period sessions(after normalize/filter)=${allPeriods[allPeriods.length - 1].sessions.length}`,
       );
     } catch (e) {
       const message =
         e && typeof e === 'object' && 'message' in e ? String(e.message) : String(e);
-      result.errors.push({ stage: `scrape_${suffix}`, message });
-      console.warn(`Warning: failed to scrape ${suffix} for ${sauna.name}. ${message}`);
+      allErrors.push({ stage: `scrape_${suffix}`, message });
+      console.warn(`Warning: failed to scrape ${suffix}. ${message}`);
     }
   }
 
-  const outPath = path.join(OUTPUT_DIR, `${baseName}.json`);
-  const totalSessions = result.periods.reduce(
-    (sum, p) => sum + ((p && p.sessions && Array.isArray(p.sessions) ? p.sessions.length : 0) || 0),
-    0,
-  );
-  console.log(
-    `Scraping JSON: writing output file (periods=${result.periods.length}, sessions=${totalSessions}, errors=${result.errors.length})`,
-  );
-  fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf8');
-  console.log(`Wrote: ${outPath}`);
-  console.log(`Scraping JSON: done in ${formatMs(Date.now() - saunaStartedAt)}`);
+  // Split results into per-sauna JSON files, filtering by location when configured
+  for (const sauna of group) {
+    let baseName = toSafeFileName(sauna.name) || `sauna_${sauna._index + 1}`;
+    if (usedNames.has(baseName)) baseName = `${baseName}_${sauna._index + 1}`;
+    usedNames.add(baseName);
 
+    // Filter periods by location if this sauna row has a Location column
+    const periods = allPeriods.map((p) => ({
+      label: p.label,
+      sessions: sauna.location
+        ? filterSessionsByLocation(p.sessions, sauna.location)
+        : p.sessions,
+    }));
+
+    const result = {
+      saunaName: sauna.name,
+      url: sauna.url,
+      siteKey: adapter.key,
+      scrapedAt: new Date().toISOString(),
+      ...(sauna.location && { location: sauna.location }),
+      periods,
+      errors: [...allErrors],
+    };
+
+    const outPath = path.join(OUTPUT_DIR, `${baseName}.json`);
+    const totalSessions = periods.reduce(
+      (sum, p) => sum + ((p && p.sessions && Array.isArray(p.sessions) ? p.sessions.length : 0) || 0),
+      0,
+    );
+    console.log(
+      `Scraping JSON: writing ${sauna.name}${sauna.location ? ` [${sauna.location}]` : ''} (periods=${periods.length}, sessions=${totalSessions}, errors=${result.errors.length})`,
+    );
+    fs.writeFileSync(outPath, JSON.stringify(result, null, 2), 'utf8');
+    console.log(`Wrote: ${outPath}`);
+  }
+
+  console.log(`Scraping JSON: done for ${url} in ${formatMs(Date.now() - urlStartedAt)}`);
   await page.close();
 }
 

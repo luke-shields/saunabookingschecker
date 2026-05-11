@@ -104,6 +104,7 @@ function readSaunaInfoCsv(filePath) {
       const url = getCsvField(r, 'url');
       const siteKey = getCsvField(r, 'sitekey');
       const seats = getCsvField(r, 'seatspersession');
+      const location = getCsvField(r, 'location');
       const seatsNum = seats == null || String(seats).trim() === '' ? null : Number(seats);
 
       return {
@@ -112,6 +113,7 @@ function readSaunaInfoCsv(filePath) {
         siteKey:
           typeof siteKey === 'string' ? siteKey.trim() : String(siteKey ?? '').trim(),
         seatsPerSession: Number.isFinite(seatsNum) ? seatsNum : null,
+        location: location ? String(location).trim() : null,
       };
     })
     .filter((r) => r.url && r.url !== '.');
@@ -219,7 +221,7 @@ function upsertSaunasFromCsv(db, saunaInfo) {
   tx();
 }
 
-function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
+function harvestJsonFiles({ db, inputDir, saunaPredicate, saunaInfo }) {
   if (!fs.existsSync(inputDir) || !fs.statSync(inputDir).isDirectory()) {
     throw new Error(`Input directory not found: ${inputDir}`);
   }
@@ -228,6 +230,22 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
     .readdirSync(inputDir)
     .filter((f) => f.toLowerCase().endsWith('.json'))
     .map((f) => path.join(inputDir, f));
+
+  // Build a lookup from sauna name → CSV info (for seats_per_session per location)
+  const csvByName = new Map();
+  for (const info of saunaInfo) {
+    csvByName.set(info.name, info);
+  }
+
+  const upsertSauna = db.prepare(
+    `INSERT INTO saunas (sauna_name, url, site_key, seats_per_session)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(sauna_name) DO UPDATE SET
+       url = excluded.url,
+       site_key = excluded.site_key,
+       seats_per_session = excluded.seats_per_session,
+       updated_at = CURRENT_TIMESTAMP`,
+  );
 
   const insertRun = db.prepare(
     `INSERT INTO scrape_runs (sauna_name, site_key, scraped_at, source_json_path)
@@ -261,22 +279,68 @@ function harvestJsonFiles({ db, inputDir, saunaPredicate }) {
         continue;
       }
 
-      const saunaName = String(doc?.saunaName || '').trim();
-      if (!saunaName) continue;
-      if (!saunaPredicate(saunaName)) continue;
+      const baseSaunaName = String(doc?.saunaName || '').trim();
+      if (!baseSaunaName) continue;
 
       const scrapedAt = String(doc?.scrapedAt || '').trim();
       const siteKey = String(doc?.siteKey || '').trim() || null;
-
+      const docLocation = doc?.location || null; // Set when CSV had a Location column
       const relPath = path.isAbsolute(filePath) ? path.relative(PROJECT_ROOT, filePath) : filePath;
-      const info = insertRun.run(saunaName, siteKey, scrapedAt || new Date().toISOString(), relPath);
-      const runId = Number(info.lastInsertRowid);
 
+      // Collect all sessions across periods
+      const allSessions = [];
       const periods = Array.isArray(doc?.periods) ? doc.periods : [];
       for (const period of periods) {
         const sessions = Array.isArray(period?.sessions) ? period.sessions : [];
+        allSessions.push(...sessions);
+      }
 
-        for (const s of sessions) {
+      // Determine if we need to auto-split by location
+      // If doc.location is set, sessions are already filtered by the scraper — use baseSaunaName as-is
+      // If doc.location is NOT set, check if sessions have location tags — if so, split into sub-saunas
+      const hasLocationTags = allSessions.some((s) => s.location);
+
+      let sessionGroups;
+      if (docLocation || !hasLocationTags) {
+        // Single sauna: all sessions go under baseSaunaName
+        sessionGroups = [{ effectiveName: baseSaunaName, sessions: allSessions }];
+      } else {
+        // Auto-split: group sessions by location, derive effective names
+        const byLoc = new Map();
+        for (const s of allSessions) {
+          const loc = s.location || '_default';
+          if (!byLoc.has(loc)) byLoc.set(loc, []);
+          byLoc.get(loc).push(s);
+        }
+        sessionGroups = [];
+        for (const [loc, sessions] of byLoc) {
+          const effectiveName = loc === '_default'
+            ? baseSaunaName
+            : `${baseSaunaName} - ${loc}`;
+          sessionGroups.push({ effectiveName, location: loc === '_default' ? null : loc, sessions });
+        }
+      }
+
+      for (const group of sessionGroups) {
+        const saunaName = group.effectiveName;
+        if (!saunaPredicate(saunaName)) continue;
+
+        // Auto-create sauna entry if it doesn't exist in CSV (for auto-split locations)
+        const csvInfo = csvByName.get(saunaName);
+        if (!csvInfo) {
+          const parentInfo = csvByName.get(baseSaunaName);
+          upsertSauna.run(
+            saunaName,
+            parentInfo?.url || doc?.url || null,
+            siteKey,
+            parentInfo?.seatsPerSession ?? null,
+          );
+        }
+
+        const info = insertRun.run(saunaName, siteKey, scrapedAt || new Date().toISOString(), relPath);
+        const runId = Number(info.lastInsertRowid);
+
+        for (const s of group.sessions) {
           const date = s?.date == null ? null : String(s.date).trim();
           const time = s?.time == null ? null : String(s.time).trim();
           const spotsLeft = s?.spotsLeft == null || s.spotsLeft === '' ? null : Number(s.spotsLeft);
@@ -307,7 +371,7 @@ function main() {
   try {
     initDb(db);
     upsertSaunasFromCsv(db, saunaInfo);
-    harvestJsonFiles({ db, inputDir: args.input, saunaPredicate });
+    harvestJsonFiles({ db, inputDir: args.input, saunaPredicate, saunaInfo });
     refreshBookingsFromLatest(db);
   } finally {
     db.close();

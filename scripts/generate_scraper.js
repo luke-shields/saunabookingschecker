@@ -117,6 +117,15 @@ Read the HTML in full. Before writing a single line of adapter code, answer thes
    → Note the exact strings you see in the HTML (e.g. "11am", "2:30 PM", "3 left", "Sold out").
    → Decide whether the built-in helpers cover them (see STEP 3) or a normalizeSession is needed.
 
+6. Does the page contain MULTIPLE LOCATIONS?
+   → Some booking pages show sessions for more than one venue/location on the same URL.
+   → Look also for multiple sessions shown at overlapping times - this may indicate multiple locations.
+   → Look for location tabs, dropdown selectors, section headings, or distinct calendar
+     containers that separate sessions by place name.
+   → If multiple locations exist, each session MUST include a "location" field with the
+     location/venue name so the host can split them into independent saunas.
+   → If there is only one location, omit the "location" field.
+
 ════════════════════════════════════════════════════════════════
 STEP 2 — ADAPTER CONTRACT
 ════════════════════════════════════════════════════════════════
@@ -145,6 +154,7 @@ interface Session {           // returned by scrapePeriod — raw values are fin
   date: string|null;          // ISO-8601: "YYYY-MM-DD"
   time: string|null;          // raw: "11am", "2:30 PM", "14:00" — all accepted
   spotsText: string|null;     // raw availability text: "3 left", "Full", "Sold out", etc.
+  location?: string|null;     // venue/location name — REQUIRED when page has multiple locations
 }
 
 interface NormalizedSession { // returned by normalizeSession — must be fully resolved
@@ -152,6 +162,7 @@ interface NormalizedSession { // returned by normalizeSession — must be fully 
   time: string|null;          // must be "HH:MM" 24-hour after normalization
   spotsLeft: number|null;     // integer or null — call parseSpotsLeft(spotsText)
   spotsText: string|null;
+  location?: string|null;     // pass through from raw session
 }
 \`\`\`
 
@@ -423,8 +434,17 @@ Respond with ONLY a valid JSON object. No markdown, no code fences, no prose.
   "saunaName": "Human Readable Name (inferred from page title / header)",
   "seatsPerSession": 8,
   "useExistingAdapter": false,
-  "adapterCode": "  camelCaseUniqueKey: {\\n    key: 'camelCaseUniqueKey',\\n    ...full adapter code...\\n  },"
+  "adapterCode": "  camelCaseUniqueKey: {\\n    key: 'camelCaseUniqueKey',\\n    ...full adapter code...\\n  },",
+  "locations": null
 }
+
+If the page has MULTIPLE LOCATIONS, set locations to an array:
+  "locations": [
+    { "name": "Location A", "seatsPerSession": 8 },
+    { "name": "Location B", "seatsPerSession": 6 }
+  ]
+Each session returned by the adapter MUST include a "location" field matching one of these names.
+If there is only one location (the common case), set "locations": null and omit location from sessions.
 
 Rules for adapterCode:
 - 2-space indentation throughout
