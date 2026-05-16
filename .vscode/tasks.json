@@ -91,7 +91,7 @@
       "problemMatcher": []
     },
     {
-      "label": "Sauna: generate scraper from URL",
+      "label": "Sauna: Add sauna from URL",
       "type": "process",
       "command": "bash",
       "args": [

@@ -1233,6 +1233,134 @@ const SITE_ADAPTERS = {
       };
     },
   },
+  orchardsauna: {
+    key: 'orchardsauna',
+    extractSelector: 'div.schedulePage',
+    nextSelector: 'button[aria-label="Next week"]',
+    nextSuffix: 'next_week',
+    async getPeriodKey(page) {
+      return await page.evaluate(() => {
+        const weekElement = document.querySelector('.weeklyCalendar .week-header, .calendar-header .week-range, [class*="week"][class*="header"]');
+        return weekElement ? weekElement.textContent.trim() : null;
+      });
+    },
+    async scrapePeriod(page) {
+      const startedAt = Date.now();
+      await tracedAwait('[orchardsauna] wait for calendar', () =>
+        page.waitForSelector('div.schedulePage', { timeout: 30_000 }),
+      );
+
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const cutoff = new Date(Date.now() + DAYS_AHEAD * 86_400_000);
+
+      const periodLabel = await page.evaluate(() => {
+        const weekEl = document.querySelector('.weeklyCalendar .week-header, .calendar-header .week-range, [class*="week"][class*="header"]');
+        return weekEl ? weekEl.textContent.trim() : null;
+      });
+
+      const sessions = await page.evaluate((todayMs, cutoffMs) => {
+        const results = [];
+        const today = new Date(todayMs);
+        const cutoff = new Date(cutoffMs);
+
+        // Find all appointment slots
+        const slots = document.querySelectorAll('.appointmentSlot, [class*="appointment"][class*="slot"], .time-slot, [data-appointment-type-id]');
+        
+        slots.forEach(slot => {
+          try {
+            // Extract date
+            let dateStr = null;
+            const dateEl = slot.closest('[data-date]') || slot.querySelector('[data-date]');
+            if (dateEl) {
+              dateStr = dateEl.getAttribute('data-date');
+            } else {
+              // Try to find date from day column
+              const dayColumn = slot.closest('.day-column, [class*="day"], .calendar-day');
+              if (dayColumn) {
+                const dayHeader = dayColumn.querySelector('.day-header, [class*="day"][class*="header"], .date-header');
+                if (dayHeader) {
+                  const dayText = dayHeader.textContent.trim();
+                  // This would need more logic to convert to ISO date
+                  // For now, skip if we can't determine date
+                  return;
+                }
+              }
+            }
+
+            if (!dateStr) return;
+
+            const sessionDate = new Date(dateStr + 'T00:00:00');
+            if (sessionDate < today || sessionDate > cutoff) return;
+
+            // Extract time
+            let time = null;
+            const timeEl = slot.querySelector('.time, [class*="time"], .appointment-time') || slot;
+            if (timeEl) {
+              const timeText = timeEl.textContent.trim();
+              const timeMatch = timeText.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?|\d{1,2}\s*(?:AM|PM))/i);
+              if (timeMatch) {
+                time = timeMatch[1];
+              }
+            }
+
+            // Extract session title and location
+            let sessionTitle = '';
+            let location = null;
+            const titleEl = slot.querySelector('.appointment-title, .session-title, [class*="title"], .appointmentTitle') || slot;
+            if (titleEl) {
+              sessionTitle = titleEl.textContent.trim();
+              
+              // Extract location from title
+              if (sessionTitle.includes('Paddock Sauna')) {
+                location = 'Paddock Sauna';
+              } else if (sessionTitle.includes('Pasture Sauna')) {
+                location = 'Pasture Sauna';
+              }
+            }
+
+            // Extract availability
+            let spotsText = null;
+            const availEl = slot.querySelector('.spots-left, .availability, [class*="spots"], [class*="available"], .appointment-availability');
+            if (availEl) {
+              spotsText = availEl.textContent.trim();
+            } else {
+              // Check if slot has sold out or full indication
+              const slotText = slot.textContent.toLowerCase();
+              if (slotText.includes('full') || slotText.includes('sold out') || slotText.includes('no spots')) {
+                spotsText = 'Full';
+              } else if (slotText.includes('spot') || slotText.includes('space') || slotText.includes('left')) {
+                const spotMatch = slotText.match(/(\d+)\s*(?:spots?|spaces?)\s*(?:left|available|remaining)/i);
+                if (spotMatch) {
+                  spotsText = spotMatch[1] + ' spots left';
+                }
+              }
+            }
+
+            if (time) {
+              const session = {
+                date: dateStr,
+                time: time,
+                spotsText: spotsText
+              };
+              
+              if (location) {
+                session.location = location;
+              }
+              
+              results.push(session);
+            }
+          } catch (e) {
+            console.warn('Error processing slot:', e);
+          }
+        });
+
+        return results;
+      }, today.getTime(), cutoff.getTime());
+
+      console.log(`[orchardsauna] scrapePeriod done: ${sessions.length} sessions in ${formatMs(Date.now() - startedAt)}`);
+      return { periodLabel: periodLabel?.trim() ?? null, sessions };
+    },
+  },
 };
 
 // Backwards-compatible aliases (old sauna_info.csv values)

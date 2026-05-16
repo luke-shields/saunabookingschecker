@@ -49,7 +49,29 @@ async function capturePageContent(url) {
     await page.waitForTimeout(1_000);
     await page.evaluate(() => window.scrollTo(0, 0));
     const screenshot = await page.screenshot({ type: 'png', fullPage: true });
-    const html = await page.evaluate(() => document.documentElement.outerHTML);
+    // Capture main frame HTML
+    let html = await page.evaluate(() => document.documentElement.outerHTML);
+    // Also capture iframe content — booking widgets are often embedded in iframes
+    const frames = page.frames();
+    const iframeHtmlParts = [];
+    for (const frame of frames) {
+      if (frame === page.mainFrame()) continue;
+      try {
+        const frameHtml = await frame.evaluate(() => document.documentElement.outerHTML);
+        const frameUrl = frame.url();
+        if (frameHtml && frameHtml.length > 200) {
+          iframeHtmlParts.push(
+            `\n<!-- ══ IFRAME src="${frameUrl}" ══ -->\n${frameHtml}\n<!-- ══ END IFRAME ══ -->`,
+          );
+        }
+      } catch {
+        // cross-origin or detached frames
+      }
+    }
+    if (iframeHtmlParts.length > 0) {
+      html += `\n\n<!-- ══════ EMBEDDED IFRAME CONTENT ══════ -->${iframeHtmlParts.join('\n')}`;
+      console.log(`Captured ${iframeHtmlParts.length} iframe(s) with booking content`);
+    }
     await page.close();
     return { screenshot, html };
   } finally {
@@ -117,13 +139,20 @@ Read the HTML in full. Before writing a single line of adapter code, answer thes
    → Note the exact strings you see in the HTML (e.g. "11am", "2:30 PM", "3 left", "Sold out").
    → Decide whether the built-in helpers cover them (see STEP 3) or a normalizeSession is needed.
 
-6. Does the page contain MULTIPLE LOCATIONS?
-   → Some booking pages show sessions for more than one venue/location on the same URL.
-   → Look also for multiple sessions shown at overlapping times - this may indicate multiple locations.
-   → Look for location tabs, dropdown selectors, section headings, or distinct calendar
-     containers that separate sessions by place name.
+6. Does the page contain MULTIPLE LOCATIONS / VENUES / SAUNAS?
+   → This is CRITICAL. Many booking pages show sessions for more than one sauna/venue/location
+     on the same URL. Locations can appear as:
+       • Explicit tabs, dropdown selectors, or section headings
+       • Location names EMBEDDED IN SESSION TITLES or descriptions, e.g.:
+         "Communal session (60 mins, Pasture Sauna)" ← "Pasture Sauna" is the location
+         "Silent Sauna (60 mins, Paddock Sauna)" ← "Paddock Sauna" is the location
+       • Different capacity hints per location, e.g. "up to 8 other folk" vs "up to 5"
+       • OVERLAPPING TIME SLOTS: if two 60-min sessions start at 15:30 and 16:00 on the
+         same day, they overlap — this is a strong signal they are at different locations.
+         A single sauna cannot run overlapping sessions.
    → If multiple locations exist, each session MUST include a "location" field with the
-     location/venue name so the host can split them into independent saunas.
+     clean location/venue name (e.g. "Pasture Sauna", "Paddock Sauna").
+   → Also infer seatsPerSession PER LOCATION from capacity descriptions when possible.
    → If there is only one location, omit the "location" field.
 
 ════════════════════════════════════════════════════════════════
@@ -435,15 +464,21 @@ Respond with ONLY a valid JSON object. No markdown, no code fences, no prose.
   "seatsPerSession": 8,
   "useExistingAdapter": false,
   "adapterCode": "  camelCaseUniqueKey: {\\n    key: 'camelCaseUniqueKey',\\n    ...full adapter code...\\n  },",
-  "locations": null
-}
-
-If the page has MULTIPLE LOCATIONS, set locations to an array:
   "locations": [
     { "name": "Location A", "seatsPerSession": 8 },
     { "name": "Location B", "seatsPerSession": 6 }
   ]
-Each session returned by the adapter MUST include a "location" field matching one of these names.
+}
+
+IMPORTANT — MULTIPLE LOCATIONS:
+If you detected multiple locations in STEP 1.6, you MUST set "locations" to an array:
+  "locations": [
+    { "name": "Location A", "seatsPerSession": 8 },
+    { "name": "Location B", "seatsPerSession": 6 }
+  ]
+The "locations" array and the adapter's "location" field on sessions MUST be consistent.
+If the adapter code tags sessions with location, you MUST also return the "locations" array.
+Infer seatsPerSession per location from capacity descriptions (e.g. "up to 5 other folk" = 6 seats).
 If there is only one location (the common case), set "locations": null and omit location from sessions.
 
 Rules for adapterCode:
@@ -467,23 +502,43 @@ function extractJson(text) {
   throw new Error(`Cannot parse Claude response as JSON.\n\nRaw response:\n${text}`);
 }
 
-async function askClaude(url, siteKey, html, screenshot, existingAdapterKeys) {
+async function askClaude(url, siteKey, html, screenshot, existingAdapterKeys, options = {}) {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY environment variable is not set.');
   }
 
   const client = new Anthropic();
   const maxHtml = 80_000;
-  const truncatedHtml =
-    html.length > maxHtml
-      ? `${html.slice(0, maxHtml / 2)}\n\n...[HTML truncated]...\n\n${html.slice(-maxHtml / 2)}`
-      : html;
+  // Prioritise iframe content (booking widgets) over main page boilerplate
+  let truncatedHtml;
+  const iframeSplit = html.indexOf('<!-- ══════ EMBEDDED IFRAME CONTENT ══════ -->');
+  if (html.length <= maxHtml) {
+    truncatedHtml = html;
+  } else if (iframeSplit > 0) {
+    const iframeContent = html.slice(iframeSplit);
+    const mainBudget = Math.max(20_000, maxHtml - iframeContent.length);
+    const mainHtml = html.slice(0, iframeSplit);
+    const truncatedMain = mainHtml.length > mainBudget
+      ? `${mainHtml.slice(0, mainBudget / 2)}\n\n...[main page HTML truncated]...\n\n${mainHtml.slice(-(mainBudget / 2))}`
+      : mainHtml;
+    const iframeBudget = maxHtml - truncatedMain.length;
+    const truncatedIframe = iframeContent.length > iframeBudget
+      ? `${iframeContent.slice(0, iframeBudget / 2)}\n\n...[iframe HTML truncated]...\n\n${iframeContent.slice(-(iframeBudget / 2))}`
+      : iframeContent;
+    truncatedHtml = truncatedMain + truncatedIframe;
+  } else {
+    truncatedHtml = `${html.slice(0, maxHtml / 2)}\n\n...[HTML truncated]...\n\n${html.slice(-maxHtml / 2)}`;
+  }
 
   console.log(`Sending ${Math.round(truncatedHtml.length / 1024)}KB HTML + screenshot to Claude...`);
 
-  const response = await client.messages.create({
-    model: 'claude-3-5-sonnet-20241022',
-    max_tokens: 8_000,
+  const stream = await client.messages.stream({
+    model: 'claude-sonnet-4-20250514',
+    thinking: {
+      type: 'enabled',
+      budget_tokens: 10_000,
+    },
+    max_tokens: 24_000,
     system: [
       {
         type: 'text',
@@ -513,10 +568,19 @@ async function askClaude(url, siteKey, html, screenshot, existingAdapterKeys) {
           },
         ],
       },
+      // If retrying with a correction, append it as an assistant+user turn
+      ...(options.correction
+        ? [
+            { role: 'assistant', content: [{ type: 'text', text: 'I need to reconsider my approach.' }] },
+            { role: 'user', content: [{ type: 'text', text: options.correction }] },
+          ]
+        : []),
     ],
   });
 
+  const response = await stream.finalMessage();
   const raw = response.content.find((c) => c.type === 'text')?.text ?? '';
+  console.log(`\nClaude raw response (${raw.length} chars):\n${raw.slice(0, 2000)}${raw.length > 2000 ? '\n...[truncated]' : ''}\n`);
   return extractJson(raw);
 }
 
@@ -572,21 +636,57 @@ const suggestedKey = deriveSiteKey(args.url, existingKeys);
 const { screenshot, html } = await capturePageContent(args.url);
 console.log(`Captured page: ${Math.round(html.length / 1024)}KB HTML, ${Math.round(screenshot.length / 1024)}KB screenshot`);
 
-const result = await askClaude(args.url, suggestedKey, html, screenshot, existingKeys);
+let result = await askClaude(args.url, suggestedKey, html, screenshot, existingKeys);
 
-const finalSiteKey = String(result.siteKey || suggestedKey).trim();
-const finalName = args.name || String(result.saunaName || 'Unknown Sauna').trim();
-const finalSeats = args.seats || Number(result.seatsPerSession) || 8;
+let finalSiteKey = String(result.siteKey || suggestedKey).trim();
+let finalName = args.name || String(result.saunaName || 'Unknown Sauna').trim();
+let finalSeats = args.seats || Number(result.seatsPerSession) || 8;
 let usingExisting = Boolean(result.useExistingAdapter);
 
 // Guard: Claude sometimes claims an existing adapter for a platform it doesn't recognise.
-// Verify the key actually exists in open_urls.js before trusting it.
+// Auto-retry once with a corrective message instead of erroring out.
 if (usingExisting && !adapterKeyExists(finalSiteKey)) {
-  console.error(
-    `\nError: Claude said to reuse existing adapter '${finalSiteKey}' but that key does not exist in SITE_ADAPTERS.\n` +
-      `Re-run the command — Claude should generate a new adapter this time.`,
+  console.warn(
+    `\nWarning: Claude said to reuse adapter '${finalSiteKey}' but it does not exist. Retrying with correction...`,
   );
-  process.exit(1);
+  result = await askClaude(args.url, suggestedKey, html, screenshot, existingKeys, {
+    correction: `The adapter '${finalSiteKey}' does NOT exist. You MUST generate new adapter code. Set useExistingAdapter=false and provide full adapterCode. Do NOT return useExistingAdapter=true.`,
+  });
+  finalSiteKey = String(result.siteKey || suggestedKey).trim();
+  finalName = args.name || String(result.saunaName || 'Unknown Sauna').trim();
+  finalSeats = args.seats || Number(result.seatsPerSession) || 8;
+  usingExisting = Boolean(result.useExistingAdapter);
+
+  if (usingExisting && !adapterKeyExists(finalSiteKey)) {
+    console.error(
+      `\nError: Claude still claims adapter '${finalSiteKey}' exists after retry. Cannot continue.`,
+    );
+    process.exit(1);
+  }
+}
+
+// Post-processing: if Claude built location-aware adapter code but forgot the locations array,
+// extract location names from the adapter code automatically.
+let locations = Array.isArray(result.locations) && result.locations.length > 0
+  ? result.locations
+  : null;
+
+if (!locations && result.adapterCode && typeof result.adapterCode === 'string') {
+  // Look for patterns like: location = 'Pasture Sauna'  or  location: 'Paddock Sauna'
+  const locMatches = [
+    ...result.adapterCode.matchAll(/location\s*=\s*'([^']+)'/g),
+    ...result.adapterCode.matchAll(/location\s*=\s*"([^"]+)"/g),
+    ...result.adapterCode.matchAll(/location:\s*'([^']+)'/g),
+    ...result.adapterCode.matchAll(/location:\s*"([^"]+)"/g),
+  ];
+  const foundNames = [...new Set(locMatches.map((m) => m[1]).filter(Boolean))];
+  if (foundNames.length > 1) {
+    console.warn(
+      `\nNote: Claude returned locations=null but adapter code references ${foundNames.length} locations: ${foundNames.join(', ')}`,
+    );
+    locations = foundNames.map((name) => ({ name, seatsPerSession: finalSeats }));
+    console.log('Auto-extracted locations from adapter code.');
+  }
 }
 
 console.log(`\nResult:`);
@@ -594,6 +694,12 @@ console.log(`  Name:          ${finalName}`);
 console.log(`  SiteKey:       ${finalSiteKey}`);
 console.log(`  Seats:         ${finalSeats}`);
 console.log(`  Adapter:       ${usingExisting ? `reusing existing '${finalSiteKey}'` : 'new (generated)'}`);
+if (locations) {
+  console.log(`  Locations:     ${locations.length} detected`);
+  for (const loc of locations) {
+    console.log(`    - ${loc.name} (${loc.seatsPerSession} seats)`);
+  }
+}
 
 if (!usingExisting) {
   if (!result.adapterCode || typeof result.adapterCode !== 'string') {
@@ -605,9 +711,37 @@ if (!usingExisting) {
   console.log('Done.');
 }
 
-console.log('Appending row to sauna_info.csv...');
-appendCsvRow(finalName, args.url, finalSiteKey, finalSeats);
+// Ensure CSV header includes Location column if needed
+if (locations) {
+  const csvHeader = fs.readFileSync(SAUNA_INFO_PATH, 'utf8').split('\n')[0];
+  if (!/location/i.test(csvHeader)) {
+    const csvContent = fs.readFileSync(SAUNA_INFO_PATH, 'utf8');
+    const lines = csvContent.split('\n');
+    lines[0] = lines[0].trimEnd() + ',Location';
+    fs.writeFileSync(SAUNA_INFO_PATH, lines.join('\n'), 'utf8');
+    console.log('Added Location column to CSV header.');
+  }
+}
+
+console.log('Appending row(s) to sauna_info.csv...');
+if (locations) {
+  for (const loc of locations) {
+    const locName = args.name
+      ? `${args.name} - ${loc.name}`
+      : `${finalName} - ${loc.name}`;
+    const locSeats = loc.seatsPerSession || finalSeats;
+    appendCsvRow(locName, args.url, finalSiteKey, locSeats, loc.name);
+    console.log(`  Added: ${locName} [${loc.name}] (${locSeats} seats)`);
+  }
+} else {
+  appendCsvRow(finalName, args.url, finalSiteKey, finalSeats);
+}
 console.log('Done.');
 
 console.log(`\nAll set. Test it with:`);
-console.log(`  npm run scrape:booking-data -- --sauna="${finalName}"`);
+if (locations) {
+  console.log(`  npm run scrape:booking-data -- --sauna="${finalName}"`);
+  console.log(`  (This will scrape all ${locations.length} locations from the same URL)`);
+} else {
+  console.log(`  npm run scrape:booking-data -- --sauna="${finalName}"`);
+}
