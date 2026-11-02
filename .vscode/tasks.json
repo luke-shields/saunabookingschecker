@@ -109,7 +109,7 @@
       "command": "bash",
       "args": [
         "-lc",
-        "set -euo pipefail; git fetch origin data; git checkout origin/data -- sauna_bookings.sqlite"
+        "set -euo pipefail; git fetch origin data; git show origin/data:sauna_bookings.sqlite.gz | gunzip > sauna_bookings.sqlite"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
