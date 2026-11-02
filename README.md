@@ -135,7 +135,9 @@ On every run, the workflow:
 - Resets `data` to match the repo default branch (usually `main`)
 - Runs the update pipeline
 - Exports data for GitHub Pages
-- Commits `sauna_bookings.sqlite` and `docs/` directory
+- Commits the gzipped database (`sauna_bookings.sqlite.gz`) and `docs/` directory
+
+The database is stored gzipped on `data` because the raw SQLite file outgrew GitHub's 100 MB per-file limit. The workflow decompresses it at the start of each run and fails with a clear error if the compressed file ever approaches the limit.
 
 This keeps `data` up to date with `main` in terms of code/config, while avoiding constant divergence on your development branches.
 
@@ -149,7 +151,7 @@ To update only the DB file in your current branch/working tree:
 
 ```bash
 git fetch origin data
-git checkout origin/data -- sauna_bookings.sqlite
+git show origin/data:sauna_bookings.sqlite.gz | gunzip > sauna_bookings.sqlite
 ```
 
 ### Trigger the workflow from VS Code
@@ -161,7 +163,7 @@ Run the task:
 Notes:
 
 - Requires `gh` installed + authenticated (`gh auth login`).
-- The task triggers the workflow, waits for it to finish, then pulls only `sauna_bookings.sqlite` from `origin/data`.
+- The task triggers the workflow, waits for it to finish, then pulls and decompresses `sauna_bookings.sqlite.gz` from `origin/data`.
 
 ## Repo data inputs
 

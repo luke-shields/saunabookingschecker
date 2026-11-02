@@ -18,7 +18,8 @@ env:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright cannot install Chromium on.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
@@ -36,13 +37,24 @@ jobs:
           git fetch origin "${DATA_BRANCH}" || true
           git checkout -B "${DATA_BRANCH}" "origin/${BASE_BRANCH}"
 
-          # Option B: restore the previous DB from the existing data branch (if present)
-          # so `npm run update` can build incrementally.
-          if git show "origin/${DATA_BRANCH}:sauna_bookings.sqlite" > sauna_bookings.sqlite 2>/dev/null; then
-            echo "Restored sauna_bookings.sqlite from origin/${DATA_BRANCH}";
+          # Restore the previous DB from the existing data branch so `npm run update`
+          # builds incrementally. The DB is stored gzipped because the raw file
+          # outgrew GitHub's 100 MB per-file limit. Falls back to the legacy
+          # uncompressed file for the first run after the switch.
+          if git cat-file -e "origin/${DATA_BRANCH}:sauna_bookings.sqlite.gz" 2>/dev/null; then
+            git show "origin/${DATA_BRANCH}:sauna_bookings.sqlite.gz" | gunzip > sauna_bookings.sqlite
+            echo "Restored sauna_bookings.sqlite from origin/${DATA_BRANCH} (gzipped)"
+          elif git cat-file -e "origin/${DATA_BRANCH}:sauna_bookings.sqlite" 2>/dev/null; then
+            git show "origin/${DATA_BRANCH}:sauna_bookings.sqlite" > sauna_bookings.sqlite
+            echo "Restored sauna_bookings.sqlite from origin/${DATA_BRANCH} (legacy uncompressed)"
+          elif git rev-parse --verify --quiet "origin/${DATA_BRANCH}" >/dev/null; then
+            # Never silently start fresh when a data branch exists: that would wipe history.
+            echo "::error::origin/${DATA_BRANCH} exists but has no database file; refusing to start fresh."
+            exit 1
           else
-            echo "No previous sauna_bookings.sqlite found on origin/${DATA_BRANCH}; starting fresh.";
+            echo "No ${DATA_BRANCH} branch found; starting fresh."
           fi
+          ls -la sauna_bookings.sqlite || true
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -67,8 +79,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add sauna_bookings.sqlite docs/
+          # Compress the DB (raw file exceeds GitHub's 100 MB limit; gzip is ~7x smaller).
+          gzip -9 -n -c sauna_bookings.sqlite > sauna_bookings.sqlite.gz
+          size=$(stat -c %s sauna_bookings.sqlite.gz)
+          echo "Compressed DB size: ${size} bytes"
+          if [ "$size" -gt 94371840 ]; then
+            echo "::error::sauna_bookings.sqlite.gz is ${size} bytes, close to GitHub's 100 MB limit."
+            exit 1
+          elif [ "$size" -gt 73400320 ]; then
+            echo "::warning::sauna_bookings.sqlite.gz is ${size} bytes; approaching GitHub's 100 MB limit."
+          fi
 
+          git rm --cached --ignore-unmatch --quiet sauna_bookings.sqlite
+          git add -f sauna_bookings.sqlite.gz
 
           if git diff --cached --quiet; then
             echo "No changes to commit."

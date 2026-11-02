@@ -41,6 +41,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Decompress database
+        run: |
+          if [ -f sauna_bookings.sqlite.gz ]; then
+            gunzip -c sauna_bookings.sqlite.gz > sauna_bookings.sqlite
+          fi
+          ls -la sauna_bookings.sqlite
+
       - name: Generate data for GitHub Pages
         run: npm run export:data
 
